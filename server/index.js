@@ -2547,10 +2547,18 @@ async function boot() {
   if (isProduction() && !r2.r2Configured()) {
     console.warn('WARNING: R2 is not configured — media uploads will fail in production');
   }
-  app.listen(PORT, '0.0.0.0', () => {
+  const server = app.listen(PORT, '0.0.0.0', () => {
     pruneStaleNotifications();
     console.log(`EliteSchool API listening on 0.0.0.0:${PORT}`);
     console.log(`DB mode: ${db.getStorageMode()}`);
+  });
+  server.on('error', (err) => {
+    if (err && err.code === 'EADDRINUSE') {
+      console.error(`Port ${PORT} is already in use. Stop the other process (Ctrl+C) or run:`);
+      console.error(`  Get-NetTCPConnection -LocalPort ${PORT} | Stop-Process -Id {$_.OwningProcess} -Force`);
+      process.exit(1);
+    }
+    throw err;
   });
 }
 

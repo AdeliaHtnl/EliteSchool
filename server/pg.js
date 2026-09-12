@@ -14,12 +14,16 @@ function hasDatabaseUrl() {
 function getPool() {
   if (!hasDatabaseUrl()) return null;
   if (pool) return pool;
-  const connectionString = String(process.env.DATABASE_URL).trim();
-  const needsSsl = /neon\.tech|sslmode=require|render\.com/i.test(connectionString)
+  const connectionString = String(process.env.DATABASE_URL).trim()
+    // node-pg warning: prefer explicit compat flag for sslmode=require
+    .replace(/([?&])sslmode=require\b/i, '$1sslmode=require&uselibpqcompat=true');
+  // Avoid duplicate uselibpqcompat
+  const cleaned = connectionString.replace(/(uselibpqcompat=true&){2,}/g, 'uselibpqcompat=true&');
+  const needsSsl = /neon\.tech|sslmode=require|render\.com/i.test(cleaned)
     || isProduction()
     || String(process.env.PGSSL || '').toLowerCase() === 'true';
   pool = new Pool({
-    connectionString,
+    connectionString: cleaned,
     ssl: needsSsl ? { rejectUnauthorized: false } : undefined,
     max: Number(process.env.PG_POOL_MAX || 10),
     idleTimeoutMillis: 30000,

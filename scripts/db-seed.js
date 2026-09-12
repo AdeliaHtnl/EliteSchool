@@ -21,28 +21,36 @@ const REQUIRED_SEEDS = [
 async function seedPostgres() {
   const code = teacherLoginCode();
   const now = new Date().toISOString();
+  const teacher = {
+    id: 'u-teacher-1',
+    role: 'TEACHER',
+    name: 'Учитель',
+    code,
+    groupName: null,
+    teacherId: null,
+    createdAt: now,
+    lastActiveAt: now,
+  };
   const existing = await query(`SELECT id FROM users WHERE role = 'TEACHER' LIMIT 1`);
   if (!existing.rows.length) {
     await query(
       `INSERT INTO users (id, role, name, code, language, created_at, last_active_at, data)
        VALUES ($1, 'TEACHER', $2, $3, NULL, $4, $4, $5::jsonb)
        ON CONFLICT (id) DO NOTHING`,
-      [
-        'u-teacher-1',
-        'Учитель',
-        code,
-        now,
-        JSON.stringify({ groupName: null, teacherId: null }),
-      ]
+      [teacher.id, teacher.name, code, now, JSON.stringify(teacher)]
     );
     console.log('OK: created teacher user u-teacher-1');
   } else {
     await query(
-      `UPDATE users SET code = $1, name = COALESCE(NULLIF(name, ''), 'Учитель'), updated_at = now()
+      `UPDATE users
+       SET code = $1,
+           name = 'Учитель',
+           data = $2::jsonb,
+           updated_at = now()
        WHERE role = 'TEACHER'`,
-      [code]
+      [code, JSON.stringify(teacher)]
     );
-    console.log('OK: teacher user already present (code synced)');
+    console.log('OK: teacher user repaired/synced');
   }
 }
 

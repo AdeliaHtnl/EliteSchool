@@ -157,34 +157,162 @@ function migrateTracks() {
 }
 
 function rowData(row) {
-  if (row && row.data && typeof row.data === 'object') return row.data;
+  if (!row) return null;
+  let data = row.data;
+  if (typeof data === 'string') {
+    try { data = JSON.parse(data); } catch (_) { data = null; }
+  }
+  if (data && typeof data === 'object') return data;
   return null;
 }
 
+function mapUserRow(r) {
+  const d = rowData(r) || {};
+  return {
+    ...d,
+    id: d.id || r.id,
+    role: d.role || r.role,
+    name: d.name || r.name,
+    code: d.code != null ? d.code : r.code,
+    passwordHash: d.passwordHash || r.password_hash || null,
+    groupName: d.groupName != null ? d.groupName : r.group_name,
+    teacherId: d.teacherId != null ? d.teacherId : r.teacher_id,
+    language: d.language != null ? d.language : r.language,
+    enrollmentLevel: d.enrollmentLevel != null ? d.enrollmentLevel : r.enrollment_level,
+    createdAt: d.createdAt || r.created_at || nowIso(),
+    lastActiveAt: d.lastActiveAt || r.last_active_at || null,
+  };
+}
+
+function mapDocRow(r, extras = {}) {
+  const d = rowData(r) || {};
+  return { ...d, ...extras, id: d.id || r.id || extras.id };
+}
+
 async function loadFromPostgres() {
-  const users = await pg.query('SELECT data FROM users');
-  const sessions = await pg.query('SELECT data FROM auth_sessions');
-  const assignments = await pg.query('SELECT data FROM assignments');
+  const users = await pg.query(
+    `SELECT id, role, name, code, password_hash, group_name, teacher_id, language,
+            enrollment_level, created_at, last_active_at, data FROM users`
+  );
+  const sessions = await pg.query(
+    `SELECT id, user_id, token, created_at, expires_at, data FROM auth_sessions`
+  );
+  const assignments = await pg.query(
+    `SELECT id, teacher_id, language, status, title, created_at, data FROM assignments`
+  );
   const links = await pg.query('SELECT assignment_id, student_id FROM assignment_students');
-  const flows = await pg.query('SELECT data FROM flow_sessions');
-  const retellings = await pg.query('SELECT data FROM retellings');
-  const notifications = await pg.query('SELECT data FROM notifications');
-  const attempts = await pg.query('SELECT data FROM quiz_attempts');
-  const lessons = await pg.query('SELECT data FROM lessons');
+  const flows = await pg.query(
+    `SELECT id, assignment_id, student_id, data FROM flow_sessions`
+  );
+  const retellings = await pg.query(
+    `SELECT id, assignment_id, student_id, language, status, media_key, media_path, mime_type,
+            created_at, submitted_at, data FROM retellings`
+  );
+  const notifications = await pg.query(
+    `SELECT id, user_id, title, body, read, created_at, data FROM notifications`
+  );
+  const attempts = await pg.query(
+    `SELECT id, student_id, quiz_id, subject_id, language, status, started_at, completed_at, data
+     FROM quiz_attempts`
+  );
+  const lessons = await pg.query(
+    `SELECT id, teacher_id, language, section, title, file_key, file_path, mime_type, created_at, data
+     FROM lessons`
+  );
 
   db = emptyDb();
-  db.users = users.rows.map((r) => rowData(r) || r).filter(Boolean);
-  db.authSessions = sessions.rows.map((r) => rowData(r) || r).filter(Boolean);
-  db.assignments = assignments.rows.map((r) => rowData(r) || r).filter(Boolean);
+  db.users = users.rows.map(mapUserRow).filter((u) => u && u.id);
+  db.authSessions = sessions.rows.map((r) => {
+    const d = rowData(r) || {};
+    return {
+      ...d,
+      id: d.id || r.id,
+      userId: d.userId || r.user_id,
+      token: d.token || r.token,
+      createdAt: d.createdAt || r.created_at,
+      expiresAt: d.expiresAt || r.expires_at,
+    };
+  }).filter((s) => s && s.id && s.token);
+  db.assignments = assignments.rows.map((r) => {
+    const d = rowData(r) || {};
+    return {
+      ...d,
+      id: d.id || r.id,
+      teacherId: d.teacherId || r.teacher_id,
+      language: d.language || r.language,
+      status: d.status || r.status,
+      title: d.title != null ? d.title : r.title,
+      createdAt: d.createdAt || r.created_at,
+    };
+  }).filter((a) => a && a.id);
   db.assignmentStudents = links.rows.map((r) => ({
     assignmentId: r.assignment_id,
     studentId: r.student_id,
   }));
-  db.flowSessions = flows.rows.map((r) => rowData(r) || r).filter(Boolean);
-  db.retellings = retellings.rows.map((r) => rowData(r) || r).filter(Boolean);
-  db.notifications = notifications.rows.map((r) => rowData(r) || r).filter(Boolean);
-  db.literacyAttempts = attempts.rows.map((r) => rowData(r) || r).filter(Boolean);
-  db.lessons = lessons.rows.map((r) => rowData(r) || r).filter(Boolean);
+  db.flowSessions = flows.rows.map((r) => {
+    const d = rowData(r) || {};
+    return {
+      ...d,
+      id: d.id || r.id,
+      assignmentId: d.assignmentId || r.assignment_id,
+      studentId: d.studentId || r.student_id,
+    };
+  }).filter((f) => f && f.assignmentId && f.studentId);
+  db.retellings = retellings.rows.map((r) => {
+    const d = rowData(r) || {};
+    return {
+      ...d,
+      id: d.id || r.id,
+      assignmentId: d.assignmentId || r.assignment_id,
+      studentId: d.studentId || r.student_id,
+      language: d.language || r.language,
+      status: d.status || r.status,
+      mediaKey: d.mediaKey || r.media_key,
+      mediaPath: d.mediaPath || r.media_path,
+      mimeType: d.mimeType || r.mime_type,
+      submittedAt: d.submittedAt || r.submitted_at,
+    };
+  }).filter((x) => x && x.id);
+  db.notifications = notifications.rows.map((r) => {
+    const d = rowData(r) || {};
+    return {
+      ...d,
+      id: d.id || r.id,
+      userId: d.userId || r.user_id,
+      title: d.title != null ? d.title : r.title,
+      body: d.body != null ? d.body : r.body,
+      read: d.read != null ? d.read : r.read,
+      createdAt: d.createdAt || r.created_at,
+    };
+  }).filter((n) => n && n.id);
+  db.literacyAttempts = attempts.rows.map((r) => {
+    const d = rowData(r) || {};
+    return {
+      ...d,
+      id: d.id || r.id,
+      studentId: d.studentId || r.student_id,
+      quizId: d.quizId || r.quiz_id,
+      subjectId: d.subjectId || r.subject_id,
+      status: d.status || r.status,
+      startedAt: d.startedAt || r.started_at,
+      completedAt: d.completedAt || r.completed_at,
+    };
+  }).filter((a) => a && a.id);
+  db.lessons = lessons.rows.map((r) => {
+    const d = rowData(r) || {};
+    return {
+      ...d,
+      id: d.id || r.id,
+      teacherId: d.teacherId || r.teacher_id,
+      language: d.language || r.language,
+      section: d.section || r.section,
+      title: d.title != null ? d.title : r.title,
+      fileKey: d.fileKey || r.file_key,
+      filePath: d.filePath || r.file_path,
+      mimeType: d.mimeType || r.mime_type,
+      createdAt: d.createdAt || r.created_at,
+    };
+  }).filter((l) => l && l.id);
 }
 
 async function persistToPostgres() {
@@ -202,6 +330,10 @@ async function persistToPostgres() {
     await client.query('DELETE FROM users');
 
     for (const u of db.users) {
+      if (!u || !u.id || !u.role || !u.name) {
+        console.warn('Skipping invalid user row during persist');
+        continue;
+      }
       const language = u.role === 'STUDENT' ? (normalizeLanguage(u.language) || 'ru') : null;
       await client.query(
         `INSERT INTO users (

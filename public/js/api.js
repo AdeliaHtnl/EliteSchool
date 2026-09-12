@@ -3,7 +3,10 @@ import { apiUrl } from './config.js';
 export function friendlyError(err) {
   const status = err && err.status;
   const m = String((err && err.message) || err || '');
-  if (status === 401) return 'Сессия истекла. Войдите снова.';
+  // Only rewrite generic auth-required responses — keep login error text from API
+  if (status === 401 && /нужно войти|сессия|session|unauthorized/i.test(m) && !/неверн|invalid|код|парол|password|code/i.test(m)) {
+    return 'Сессия истекла. Войдите снова.';
+  }
   if (status === 0 || /Failed to fetch|NetworkError|network|Load failed|offline/i.test(m)) {
     return 'Нет соединения с интернетом. Проверьте сеть и попробуйте снова.';
   }
