@@ -24,9 +24,10 @@ if (!sessionSecret || /change-me/i.test(sessionSecret)) {
   console.log('NOTE: generated SESSION_SECRET for Render (not written to local .env)');
 }
 
-const frontendUrl = String(process.env.FRONTEND_URL || '').trim()
-  || process.env.DEPLOY_FRONTEND_URL
+// Prefer production frontend URL for deploy — never ship localhost from local .env
+const frontendUrl = String(process.env.DEPLOY_FRONTEND_URL || '').trim()
   || 'https://eliteschool-web.onrender.com';
+console.log('FRONTEND_URL for Render:', frontendUrl);
 
 // Use KEY=VALUE flags so Windows shells don't split "npm install"
 const args = [
