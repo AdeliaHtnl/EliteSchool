@@ -4,9 +4,14 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>EliteSchool</title>
-<!-- Production (Vercel): set to your Render API origin, e.g. https://eliteschool-api.onrender.com -->
-<!-- Local same-origin: leave empty -->
-<script>window.ELITESCHOOL_API_URL = window.ELITESCHOOL_API_URL || "";</script>
+<!-- Production: Render API. Localhost keeps same-origin (empty). -->
+<script>
+window.ELITESCHOOL_API_URL = window.ELITESCHOOL_API_URL || (
+  location.hostname === 'localhost' || location.hostname === '127.0.0.1'
+    ? ''
+    : 'https://eliteschool-api.onrender.com'
+);
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
