@@ -4,6 +4,9 @@ const crypto = require('crypto');
 const express = require('express');
 const cookieParser = require('cookie-parser');
 const multer = require('multer');
+const { isProduction, teacherLoginCode } = require('./env');
+const { rateLimit } = require('./rateLimit');
+const gameSessions = require('./gameSessions');
 const db = require('./db');
 const literacy = require('./literacy');
 const quizzes = require('./quizzes');
@@ -75,7 +78,6 @@ function publicUser(u) {
     id: u.id,
     role: u.role,
     name: u.name,
-    code: u.code,
     groupName: u.groupName || null,
     teacherId: u.teacherId || null,
     language: u.role === 'STUDENT' ? parseLang(u.language) : null,
@@ -457,6 +459,7 @@ function setSessionCookie(res, token) {
   res.cookie(COOKIE, token, {
     httpOnly: true,
     sameSite: 'lax',
+    secure: isProduction(),
     path: '/',
     maxAge: SESSION_DAYS * 24 * 60 * 60 * 1000,
   });
@@ -470,6 +473,37 @@ function pruneSessions() {
 function normalizeTeacherCode(code) {
   return String(code || '').trim().toLowerCase();
 }
+
+function assertId(value, label = 'id') {
+  const s = String(value || '').trim();
+  if (!s || s.length > 120 || !/^[a-zA-Z0-9._:-]+$/.test(s)) {
+    const err = new Error(`Некорректный ${label}.`);
+    err.status = 400;
+    throw err;
+  }
+  return s;
+}
+
+function assertAnswerIndex(value) {
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 0 || n > 3) {
+    const err = new Error('Выберите один из четырёх вариантов.');
+    err.status = 400;
+    throw err;
+  }
+  return n;
+}
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 40,
+  keyFn: (req) => `auth:${req.ip}`,
+});
+const submitLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 60,
+  keyFn: (req) => `submit:${req.auth?.user?.id || req.ip}`,
+});
 
 function cleanTitle(value) {
   return String(value || '').replace(/^#+\s*/, '').trim();
@@ -508,7 +542,7 @@ function startSession(user, res) {
 }
 
 // -------------------- Auth --------------------
-app.post('/api/auth/register', (req, res) => {
+app.post('/api/auth/register', authLimiter, (req, res) => {
   const name = normalizeName(req.body?.name);
   const password = String(req.body?.password || '');
   const confirm = req.body?.passwordConfirm != null ? String(req.body.passwordConfirm) : password;
@@ -563,7 +597,7 @@ app.post('/api/auth/register', (req, res) => {
   res.status(201).json({ user: publicUser(user) });
 });
 
-app.post('/api/auth/student', (req, res) => {
+app.post('/api/auth/student', authLimiter, (req, res) => {
   const name = normalizeName(req.body?.name);
   const password = String(req.body?.password || '');
   if (!name || !password) return res.status(400).json({ error: 'Введите имя и пароль.' });
@@ -575,11 +609,25 @@ app.post('/api/auth/student', (req, res) => {
   res.json({ user: publicUser(user) });
 });
 
-app.post('/api/auth/teacher', (req, res) => {
+app.post('/api/auth/teacher', authLimiter, (req, res) => {
   const code = normalizeTeacherCode(req.body?.code);
   if (!code) return res.status(400).json({ error: 'Введите код учителя.' });
-  const user = store().users.find((u) => u.role === 'TEACHER' && normalizeTeacherCode(u.code) === code);
+  let expected;
+  try {
+    expected = normalizeTeacherCode(teacherLoginCode());
+  } catch (_) {
+    return res.status(503).json({ error: 'Вход учителя временно недоступен.' });
+  }
+  if (code !== expected) {
+    return res.status(401).json({ error: 'Неверный код учителя.' });
+  }
+  const user = store().users.find((u) => u.role === 'TEACHER');
   if (!user) return res.status(401).json({ error: 'Неверный код учителя.' });
+  // Keep stored code in sync with env without exposing it in responses
+  if (user.code !== expected) {
+    user.code = expected;
+    save();
+  }
   startSession(user, res);
   res.json({ user: publicUser(user) });
 });
@@ -1084,6 +1132,8 @@ app.get('/api/student/dashboard', requireAuth, requireRole('STUDENT'), (req, res
     assignments: assignments.slice(0, 8),
     unread: notifications.length,
     literacy: literacyStatsForStudent(user.id),
+    literacyRussian: literacyStatsForStudent(user.id, { subjectId: 'sub-russian' }),
+    literacyEnglish: literacyStatsForStudent(user.id, { subjectId: 'sub-english' }),
   });
 });
 
@@ -1091,8 +1141,23 @@ app.get('/api/student/progress', requireAuth, requireRole('STUDENT'), (req, res)
   res.json({ stats: studentStats(req.auth.user.id) });
 });
 
-const GAME_PASSAGES = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'data', 'game-passages.json'), 'utf8'));
+const GAME_PASSAGES = JSON.parse(fs.readFileSync(
+  fs.existsSync(path.join(db.SEEDS_DIR || path.join(__dirname, '..', 'data', 'seeds'), 'game-passages.json'))
+    ? path.join(__dirname, '..', 'data', 'seeds', 'game-passages.json')
+    : path.join(__dirname, '..', 'data', 'game-passages.json'),
+  'utf8'
+)).map((p) => ({ ...p, language: parseLang(p.language || 'RU') }));
 
+function passagesForLang(lang) {
+  const L = parseLang(lang);
+  return GAME_PASSAGES.filter((p) => parseLang(p.language) === L);
+}
+
+function pickPassage(lang) {
+  const list = passagesForLang(lang).filter((p) => p && p.text);
+  if (!list.length) return null;
+  return list[Math.floor(Math.random() * list.length)];
+}
 function studentHasSeenText(assignment, student) {
   const retelling = store().retellings.find((r) => r.assignmentId === assignment.id && r.studentId === student.id);
   if (retelling) return true;
@@ -1139,27 +1204,26 @@ function studentSeenAssignments(user) {
   return { assigned, seen, pendingCount };
 }
 
-function pickPassage() {
-  const list = GAME_PASSAGES.filter((p) => p && p.text);
-  return list[Math.floor(Math.random() * list.length)] || GAME_PASSAGES[0];
-}
-
-function buildStoryPayload(title, text, extra = {}) {
+function buildStorySession(title, text, extra = {}) {
   const pieces = storyPieces(text);
   if (pieces.length < 3) return null;
+  const order = pieces.map((_, i) => String(i));
+  const sentences = shuffleInPlace(pieces.map((sentence, i) => ({
+    id: String(i),
+    text: sentence,
+  })));
   return {
-    available: true,
-    title,
-    sentences: shuffleInPlace(pieces.map((sentence, correct) => ({
-      id: String(correct),
-      text: sentence,
-      correct,
-    }))),
-    ...extra,
+    public: {
+      available: true,
+      title,
+      sentences,
+      ...extra,
+    },
+    secret: { order },
   };
 }
 
-function makeCloze(title, text, source) {
+function makeClozeSession(title, text, source) {
   const tokens = String(text || '').split(/(\s+)/);
   const wordIdx = [];
   tokens.forEach((tok, i) => {
@@ -1169,69 +1233,130 @@ function makeCloze(title, text, source) {
   shuffleInPlace(wordIdx);
   const picked = wordIdx.slice(0, Math.min(5, wordIdx.length)).sort((a, b) => a.i - b.i);
   if (picked.length < 3) return null;
-  const bank = shuffleInPlace(picked.map((p) => p.word));
+  const answers = picked.map((p) => p.word);
+  const bank = shuffleInPlace([...answers]);
   picked.forEach((p, n) => {
     tokens[p.i] = `{{${n}}}`;
   });
   return {
-    title,
-    source,
-    template: tokens.join(''),
-    blanks: picked.map((p, n) => ({ i: n, word: p.word })),
-    bank,
+    public: {
+      title,
+      source,
+      template: tokens.join(''),
+      blanks: picked.map((_, n) => ({ i: n })),
+      bank,
+    },
+    secret: { answers },
   };
 }
 
+function filterSeenByLang(user) {
+  const lang = userLang(user);
+  const { assigned, seen, pendingCount } = studentSeenAssignments(user);
+  const seenLang = seen.filter((a) => assignmentLang(a) === lang);
+  const pendingLang = assigned.filter((a) => assignmentLang(a) === lang && !studentHasSeenText(a, user)).length;
+  return { seen: seenLang, pendingCount: pendingLang, language: lang };
+}
+
 app.get('/api/games', requireAuth, requireRole('STUDENT'), (req, res) => {
-  const { seen, pendingCount } = studentSeenAssignments(req.auth.user);
+  const { seen, pendingCount, language } = filterSeenByLang(req.auth.user);
   res.json({
     pendingCount,
     assignmentTitle: seen[0]?.title || null,
+    language,
     games: [
       { id: 'story', title: 'Собери историю', skill: 'Порядок событий', ready: true },
       { id: 'idea', title: 'Главная мысль', skill: 'Понимание текста', ready: true },
       { id: 'cloze', title: 'Вставь слово', skill: 'Словарный запас', ready: true },
       { id: 'memory', title: 'Память текста', skill: 'Внимательное чтение', ready: true },
-      { id: 'sprint', title: 'Спринт грамотности', skill: 'Орфография и речь', ready: true },
+      { id: 'sprint', title: language === 'EN' ? 'English sprint' : 'Спринт грамотности', skill: language === 'EN' ? 'Grammar & vocab' : 'Орфография и речь', ready: true },
     ],
   });
 });
 
 app.get('/api/games/story', requireAuth, requireRole('STUDENT'), (req, res) => {
-  const { seen, pendingCount } = studentSeenAssignments(req.auth.user);
+  const user = req.auth.user;
+  const { seen, pendingCount, language } = filterSeenByLang(user);
+  let built = null;
   const pick = seen[0] || null;
   if (pick) {
-    const payload = buildStoryPayload(pick.title, pick.text, {
+    built = buildStorySession(pick.title, pick.text, {
       pendingCount,
       assignmentId: pick.id,
       source: 'assignment',
+      language,
     });
-    if (payload) return res.json(payload);
   }
-  const passage = pickPassage();
-  const payload = buildStoryPayload(passage.title, passage.text, {
-    pendingCount,
-    source: 'practice',
-    passageId: passage.id,
-  });
-  if (!payload) return res.json({ available: false, pendingCount, title: null, sentences: [] });
+  if (!built) {
+    const passage = pickPassage(language);
+    if (!passage) {
+      return res.json({
+        available: false,
+        pendingCount,
+        title: null,
+        sentences: [],
+        language,
+        error: language === 'EN' ? 'No English practice texts yet.' : 'Нет текстов для игры.',
+      });
+    }
+    built = buildStorySession(passage.title, passage.text, {
+      pendingCount,
+      source: 'practice',
+      passageId: passage.id,
+      language,
+    });
+  }
+  if (!built) return res.json({ available: false, pendingCount, title: null, sentences: [], language });
+  const payload = gameSessions.createSession(user.id, 'story', built.secret, built.public);
   res.json(payload);
 });
 
-app.get('/api/games/idea', requireAuth, requireRole('STUDENT'), (_req, res) => {
-  const p = pickPassage();
+app.post('/api/games/story/check', requireAuth, requireRole('STUDENT'), (req, res) => {
+  const session = gameSessions.getSession(req.body?.sessionId, req.auth.user.id, 'story');
+  if (!session) return res.status(400).json({ error: 'Сессия игры не найдена. Начните игру заново.' });
+  const order = Array.isArray(req.body?.order) ? req.body.order.map(String) : [];
+  const expected = session.secret.order || [];
+  const ok = order.length === expected.length && order.every((id, i) => id === expected[i]);
+  gameSessions.destroySession(session.id);
   res.json({
+    ok,
+    score: ok ? expected.length : 0,
+    total: expected.length,
+    correctOrder: expected,
+  });
+});
+
+app.get('/api/games/idea', requireAuth, requireRole('STUDENT'), (req, res) => {
+  const language = userLang(req.auth.user);
+  const p = pickPassage(language);
+  if (!p) return res.status(400).json({ error: language === 'EN' ? 'No English passages.' : 'Нет текстов для игры.' });
+  const payload = gameSessions.createSession(req.auth.user.id, 'idea', {
+    correct: p.mainCorrect,
+    why: p.mainWhy,
+  }, {
     title: p.title,
     skill: p.skill,
     text: p.text,
     options: p.mainOptions,
-    correct: p.mainCorrect,
-    why: p.mainWhy,
+    language,
   });
+  res.json(payload);
+});
+
+app.post('/api/games/idea/check', requireAuth, requireRole('STUDENT'), (req, res) => {
+  const session = gameSessions.getSession(req.body?.sessionId, req.auth.user.id, 'idea');
+  if (!session) return res.status(400).json({ error: 'Сессия игры не найдена.' });
+  const picked = Number(req.body?.selectedIndex);
+  if (!Number.isInteger(picked)) return res.status(400).json({ error: 'Выберите вариант.' });
+  const ok = picked === session.secret.correct;
+  const why = session.secret.why;
+  gameSessions.destroySession(session.id);
+  res.json({ ok, correct: session.secret.correct, why });
 });
 
 app.get('/api/games/cloze', requireAuth, requireRole('STUDENT'), (req, res) => {
-  const { seen } = studentSeenAssignments(req.auth.user);
+  const user = req.auth.user;
+  const { seen, language } = filterSeenByLang(user);
   let title;
   let text;
   let source;
@@ -1240,33 +1365,125 @@ app.get('/api/games/cloze', requireAuth, requireRole('STUDENT'), (req, res) => {
     text = seen[0].text;
     source = 'assignment';
   } else {
-    const p = pickPassage();
+    const p = pickPassage(language);
+    if (!p) return res.status(400).json({ error: language === 'EN' ? 'No English text.' : 'Нет текста для игры.' });
     title = p.title;
     text = p.text;
     source = 'practice';
   }
-  const cloze = makeCloze(title, text, source);
+  const cloze = makeClozeSession(title, text, source);
   if (!cloze) return res.status(400).json({ error: 'Для этой игры нужен более длинный текст.' });
-  res.json(cloze);
+  const payload = gameSessions.createSession(user.id, 'cloze', cloze.secret, { ...cloze.public, language });
+  res.json(payload);
 });
 
-app.get('/api/games/memory', requireAuth, requireRole('STUDENT'), (_req, res) => {
-  const p = pickPassage();
-  res.json({
+app.post('/api/games/cloze/check', requireAuth, requireRole('STUDENT'), (req, res) => {
+  const session = gameSessions.getSession(req.body?.sessionId, req.auth.user.id, 'cloze');
+  if (!session) return res.status(400).json({ error: 'Сессия игры не найдена.' });
+  const filled = req.body?.filled && typeof req.body.filled === 'object' ? req.body.filled : {};
+  const answers = session.secret.answers || [];
+  let score = 0;
+  const detail = answers.map((word, i) => {
+    const got = String(filled[i] || filled[String(i)] || '').trim();
+    const ok = got.toLowerCase() === String(word).toLowerCase();
+    if (ok) score += 1;
+    return { i, ok, expected: word, got };
+  });
+  gameSessions.destroySession(session.id);
+  res.json({ score, total: answers.length, ok: score === answers.length, detail });
+});
+
+app.get('/api/games/memory', requireAuth, requireRole('STUDENT'), (req, res) => {
+  const language = userLang(req.auth.user);
+  const p = pickPassage(language);
+  if (!p) return res.status(400).json({ error: language === 'EN' ? 'No English passages.' : 'Нет текстов для игры.' });
+  const facts = shuffleInPlace((p.facts || []).map((f, i) => ({ id: i, q: f.q, a: !!f.a })));
+  const payload = gameSessions.createSession(req.auth.user.id, 'memory', {
+    facts: facts.map((f) => ({ id: f.id, a: f.a })),
+  }, {
     title: p.title,
     text: p.text,
     seconds: 20,
-    facts: shuffleInPlace((p.facts || []).map((f, i) => ({ id: i, q: f.q, a: !!f.a }))),
+    language,
+    facts: facts.map((f) => ({ id: f.id, q: f.q })),
   });
+  res.json(payload);
 });
 
-app.get('/api/games/sprint', requireAuth, requireRole('STUDENT'), (_req, res) => {
-  const bank = shuffleInPlace([...literacy.orderedBank()]);
-  const questions = bank.slice(0, 8).map((q) => ({
-    ...literacy.publicQuestion(q),
-    correctIndex: q.correctIndex,
-  }));
-  res.json({ questions, total: questions.length });
+app.post('/api/games/memory/check', requireAuth, requireRole('STUDENT'), (req, res) => {
+  const session = gameSessions.getSession(req.body?.sessionId, req.auth.user.id, 'memory');
+  if (!session) return res.status(400).json({ error: 'Сессия игры не найдена.' });
+  const answers = req.body?.answers && typeof req.body.answers === 'object' ? req.body.answers : {};
+  let score = 0;
+  const detail = (session.secret.facts || []).map((f) => {
+    const raw = answers[f.id] ?? answers[String(f.id)];
+    const got = raw === true || raw === 'true' || raw === 1 || raw === '1';
+    const ok = got === f.a;
+    if (ok) score += 1;
+    return { id: f.id, ok, expected: f.a };
+  });
+  gameSessions.destroySession(session.id);
+  res.json({ score, total: detail.length, detail });
+});
+
+app.get('/api/games/sprint', requireAuth, requireRole('STUDENT'), (req, res) => {
+  const language = userLang(req.auth.user);
+  let bank;
+  if (language === 'EN') {
+    const quiz = quizzes.getQuiz('quiz-en-general') || quizzes.getQuiz('quiz-en-grammar');
+    bank = shuffleInPlace([...quizzes.questionsForQuiz(quiz)]);
+  } else {
+    bank = shuffleInPlace([...literacy.orderedBank()]);
+  }
+  const picked = bank.slice(0, 8);
+  if (!picked.length) {
+    return res.status(400).json({ error: language === 'EN' ? 'No English questions.' : 'Нет вопросов.' });
+  }
+  const payload = gameSessions.createSession(req.auth.user.id, 'sprint', {
+    answers: Object.fromEntries(picked.map((q) => [q.id, q.correctIndex])),
+    order: picked.map((q) => q.id),
+    score: 0,
+    answered: {},
+  }, {
+    language,
+    total: picked.length,
+    questions: picked.map((q) => quizzes.publicQuestion(q, language === 'EN' ? 'en' : 'ru')),
+  });
+  res.json(payload);
+});
+
+app.post('/api/games/sprint/answer', requireAuth, requireRole('STUDENT'), (req, res) => {
+  const session = gameSessions.getSession(req.body?.sessionId, req.auth.user.id, 'sprint');
+  if (!session) return res.status(400).json({ error: 'Сессия игры не найдена.' });
+  const questionId = String(req.body?.questionId || '');
+  if (!session.secret.order.includes(questionId)) {
+    return res.status(400).json({ error: 'Вопроса нет в этой сессии.' });
+  }
+  if (session.secret.answered[questionId] != null) {
+    return res.status(400).json({ error: 'Ответ уже принят.' });
+  }
+  let selectedIndex;
+  try {
+    selectedIndex = assertAnswerIndex(req.body?.selectedIndex);
+  } catch (err) {
+    return res.status(err.status || 400).json({ error: err.message });
+  }
+  const ok = selectedIndex === session.secret.answers[questionId];
+  session.secret.answered[questionId] = selectedIndex;
+  if (ok) session.secret.score += 1;
+  const done = Object.keys(session.secret.answered).length >= session.secret.order.length;
+  const result = {
+    ok,
+    score: session.secret.score,
+    answeredCount: Object.keys(session.secret.answered).length,
+    total: session.secret.order.length,
+    done,
+  };
+  if (done) {
+    result.finalScore = session.secret.score;
+    gameSessions.destroySession(session.id);
+  }
+  res.json(result);
 });
 
 // -------------------- Teacher --------------------
@@ -1283,7 +1500,6 @@ app.get('/api/teacher/students', requireAuth, requireRole('TEACHER'), (req, res)
       return {
         id: u.id,
         name: u.name,
-        code: u.code,
         lastActiveAt: u.lastActiveAt,
         language: userLang(u),
         enrollmentLevel: userLevel(u),
@@ -1791,8 +2007,16 @@ app.get('/api/tests/quizzes/:id', requireAuth, requireRole('STUDENT'), (req, res
 
 app.post('/api/tests/quizzes/:id/start', requireAuth, requireRole('STUDENT'), (req, res) => {
   try {
-    const quiz = quizzes.getQuiz(req.params.id);
+    const quizId = assertId(req.params.id, 'quizId');
+    const quiz = quizzes.getQuiz(quizId);
     if (!quiz || !quiz.isActive) return res.status(404).json({ error: 'Тест не найден.' });
+    const subjectHint = req.body?.subject || req.query.subject;
+    if (subjectHint) {
+      const subject = quizzes.getSubject(String(subjectHint));
+      if (!subject || subject.id !== quiz.subjectId) {
+        return res.status(403).json({ error: 'Этот тест принадлежит другому предмету.' });
+      }
+    }
     res.json(startQuizAttempt(req.auth.user, quiz));
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message || 'Ошибка запуска теста.' });
@@ -1949,6 +2173,7 @@ function lessonVisibleTo(lesson, user) {
   if (!lesson || !user) return false;
   if (user.role === 'TEACHER') return lesson.teacherId === user.id;
   if (user.role !== 'STUDENT' || lesson.teacherId !== user.teacherId) return false;
+  if (parseLang(lesson.language) === 'GLOBAL') return true;
   if (parseLang(lesson.language) !== userLang(user)) return false;
   if (lesson.studentIds && lesson.studentIds.length) return lesson.studentIds.includes(user.id);
   if (lesson.targetLevel) return userLevel(user) === parseLevel(lesson.targetLevel);
@@ -2118,15 +2343,17 @@ app.get('*', (req, res, next) => {
 });
 
 app.use((err, _req, res, _next) => {
-  console.error(err);
-  res.status(500).json({ error: 'Внутренняя ошибка сервера.' });
+  console.error(err && err.message ? err.message : 'error');
+  const status = Number(err?.status) || 500;
+  const safe = status >= 500
+    ? 'Внутренняя ошибка сервера.'
+    : (err?.message || 'Ошибка запроса.');
+  res.status(status).json({ error: safe });
 });
 
 app.listen(PORT, () => {
   pruneStaleNotifications();
-  const teacher = store().users.find((u) => u.role === 'TEACHER');
-  const student = store().users.find((u) => u.role === 'STUDENT');
   console.log(`Пересказ: http://localhost:${PORT}`);
-  if (teacher) console.log(`Учитель — код: ${teacher.code}`);
   console.log('Ученик — регистрация: имя и пароль');
+  console.log('Учитель — код из переменной TEACHER_LOGIN_CODE');
 });

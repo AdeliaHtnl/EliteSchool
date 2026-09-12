@@ -1,0 +1,200 @@
+[
+  {
+    "id": "hedgehog",
+    "title": "Ёж готовится к зиме",
+    "skill": "Последовательность и понимание",
+    "text": "Осенью ёж ищет тихое место под листьями. Он таскает сухую траву и мох, чтобы сделать гнездо. Когда становится холодно, ёж сворачивается клубком и засыпает. Всю зиму он почти не просыпается. Весной ёж снова выходит искать еду.",
+    "mainIdea": "Ёж готовит гнездо и спит зимой, а весной просыпается.",
+    "mainOptions": [
+      "Ёж готовит гнездо и спит зимой, а весной просыпается.",
+      "Ёж всю зиму бегает по лесу и ищет ягоды.",
+      "Ёж улетает в тёплые края вместе с птицами."
+    ],
+    "mainCorrect": 0,
+    "mainWhy": "В тексте главное — как ёж переживает зиму: гнездо, сон и пробуждение весной.",
+    "facts": [
+      {
+        "q": "Ёж делает гнездо из сухой травы и мха.",
+        "a": true
+      },
+      {
+        "q": "Ёж зимой охотится каждую ночь.",
+        "a": false
+      },
+      {
+        "q": "Весной ёж снова ищет еду.",
+        "a": true
+      },
+      {
+        "q": "Ёж улетает на юг.",
+        "a": false
+      }
+    ],
+    "language": "RU"
+  },
+  {
+    "id": "library",
+    "title": "Первый визит в библиотеку",
+    "skill": "Главная мысль",
+    "text": "Марина впервые пришла в школьную библиотеку. Библиотекарь показал, где стоят сказки, а где — книги о природе. Девочка выбрала рассказ о реке и записала его на карточку. Дома она прочитала текст два раза и попробовала пересказать его маме своими словами. На другой день Марина вернула книгу и взяла новую.",
+    "mainIdea": "Марина учится выбирать книгу и пересказывать прочитанное своими словами.",
+    "mainOptions": [
+      "Марина учится выбирать книгу и пересказывать прочитанное своими словами.",
+      "Библиотекарь запретил брать книги домой.",
+      "Марина пришла в библиотеку, чтобы сдать экзамен."
+    ],
+    "mainCorrect": 0,
+    "mainWhy": "История не про экзамен, а про то, как девочка читает и пробует пересказ.",
+    "facts": [
+      {
+        "q": "Марина взяла рассказ о реке.",
+        "a": true
+      },
+      {
+        "q": "Она пересказала текст маме своими словами.",
+        "a": true
+      },
+      {
+        "q": "Библиотекарь спрятал все сказки.",
+        "a": false
+      },
+      {
+        "q": "Книгу нельзя было уносить домой.",
+        "a": false
+      }
+    ],
+    "language": "RU"
+  },
+  {
+    "id": "spring-river",
+    "title": "Река весной",
+    "skill": "Внимание к деталям",
+    "text": "Весной снег тает, и река становится полноводной. Вода несёт ветки и прошлогодние листья. По берегам появляются первые травинки. Птицы возвращаются и ищут место для гнёзд. Люди осторожно ходят у воды, потому что берег ещё скользкий.",
+    "mainIdea": "Весной река разливается, природа оживает, и у воды нужно быть осторожным.",
+    "mainOptions": [
+      "Весной река разливается, природа оживает, и у воды нужно быть осторожным.",
+      "Летом река пересыхает, и птицы улетают.",
+      "Люди купаются в реке каждый зимний день."
+    ],
+    "mainCorrect": 0,
+    "mainWhy": "Текст описывает весенние перемены у реки и осторожность на берегу.",
+    "facts": [
+      {
+        "q": "Весной река становится полноводной.",
+        "a": true
+      },
+      {
+        "q": "Птицы ищут место для гнёзд.",
+        "a": true
+      },
+      {
+        "q": "Берег весной всегда сухой и тёплый.",
+        "a": false
+      },
+      {
+        "q": "Вода несёт ветки и листья.",
+        "a": true
+      }
+    ],
+    "language": "RU"
+  },
+  {
+    "id": "retell-tip",
+    "title": "Как готовиться к пересказу",
+    "skill": "Стратегия пересказа",
+    "text": "Сначала прочитай текст целиком и найди главную мысль. Затем отметь героев и порядок событий: что было в начале, что в середине и чем всё закончилось. Перед записью скажи пересказ шёпотом своими словами. Не заучивай предложения наизусть — учителю важно, что ты понял текст.",
+    "mainIdea": "Для пересказа нужно понять мысль, порядок событий и рассказать своими словами.",
+    "mainOptions": [
+      "Для пересказа нужно понять мысль, порядок событий и рассказать своими словами.",
+      "Лучший пересказ — выучить текст слово в слово.",
+      "Пересказ можно начинать с конца, если забыл начало."
+    ],
+    "mainCorrect": 0,
+    "mainWhy": "Сильный пересказ строится на понимании, а не на заучивании наизусть.",
+    "facts": [
+      {
+        "q": "Сначала нужно найти главную мысль.",
+        "a": true
+      },
+      {
+        "q": "Учителю важно заучивание наизусть.",
+        "a": false
+      },
+      {
+        "q": "Полезно проговорить пересказ шёпотом до записи.",
+        "a": true
+      },
+      {
+        "q": "Порядок событий в пересказе не имеет значения.",
+        "a": false
+      }
+    ],
+    "language": "RU"
+  },
+  {
+    "id": "en-morning",
+    "language": "EN",
+    "title": "A Morning Walk",
+    "skill": "Main idea",
+    "text": "Tom woke up early and went for a walk in the park. Birds were singing in the trees. He sat on a bench and drank warm tea from a thermos. Then he walked home and started his homework.",
+    "mainIdea": "Tom enjoys a quiet morning walk before homework.",
+    "mainOptions": [
+      "Tom enjoys a quiet morning walk before homework.",
+      "Tom sleeps all day in the park.",
+      "Tom goes swimming in the morning."
+    ],
+    "mainCorrect": 0,
+    "mainWhy": "The text is about a calm morning walk, then homework.",
+    "facts": [
+      {
+        "q": "Tom woke up early.",
+        "a": true
+      },
+      {
+        "q": "Tom went to the cinema.",
+        "a": false
+      },
+      {
+        "q": "Birds were singing.",
+        "a": true
+      },
+      {
+        "q": "Tom forgot his homework forever.",
+        "a": false
+      }
+    ]
+  },
+  {
+    "id": "en-library",
+    "language": "EN",
+    "title": "In the School Library",
+    "skill": "Reading",
+    "text": "Sara visited the school library after class. The librarian showed her the science shelf. Sara chose a short story about rivers. At home she read it twice and retold it to her brother in her own words.",
+    "mainIdea": "Sara practices choosing a book and retelling it in her own words.",
+    "mainOptions": [
+      "Sara practices choosing a book and retelling it in her own words.",
+      "The librarian closed the library forever.",
+      "Sara only looked at pictures."
+    ],
+    "mainCorrect": 0,
+    "mainWhy": "She selects a book and retells it — that is the main point.",
+    "facts": [
+      {
+        "q": "Sara went to the library after class.",
+        "a": true
+      },
+      {
+        "q": "She chose a story about rivers.",
+        "a": true
+      },
+      {
+        "q": "She never read the book.",
+        "a": false
+      },
+      {
+        "q": "She retold it to her brother.",
+        "a": true
+      }
+    ]
+  }
+]

@@ -1614,7 +1614,7 @@ export function viewTestsSubject(subject, stats) {
             <p class="t-title">${esc(q.title)}</p>
             <p class="t-meta">${esc(q.description || '')} · ${q.questionCount} ${en ? 'questions' : 'вопросов'}${q.lastPercent != null ? ` · ${en ? 'best' : 'лучший'} ${q.lastPercent}%` : ''}</p>
           </div>
-          <button type="button" class="btn btn-primary btn-sm" data-action="tests-start" data-quiz="${esc(q.id)}">${label}</button>
+          <button type="button" class="btn btn-primary btn-sm" data-action="tests-start" data-quiz="${esc(q.id)}" data-subject="${esc(s.slug)}">${label}</button>
         </div>`;
       }).join('') || emptyState(en ? 'No quizzes yet' : 'Пока нет тестов', '')}
     </div>
@@ -1805,7 +1805,7 @@ export function viewGameStory(game) {
       <p class="section-sub">${esc(source)}. Поставь предложения по порядку — так восстанавливают сюжет перед пересказом.</p>
       <div data-story-list>
         ${items.map((s, i) => `
-          <div class="story-item" draggable="true" data-story-item data-id="${esc(s.id)}" data-correct="${s.correct}">
+          <div class="story-item" draggable="true" data-story-item data-id="${esc(s.id)}">
             <span class="story-num">${i + 1}</span>
             <p>${esc(s.text)}</p>
             <div class="story-moves touch-move">
@@ -1815,7 +1815,7 @@ export function viewGameStory(game) {
           </div>`).join('')}
       </div>
       <p class="form-error" data-story-msg hidden></p>
-      <button type="button" class="btn btn-primary btn-block" data-action="story-check" style="margin-top:8px;">Проверить</button>
+      <button type="button" class="btn btn-primary btn-block" data-action="story-check" style="margin-top:8px;" data-game-session="${esc(game.sessionId || '')}">Проверить</button>
       <a href="#game-story" class="btn btn-ghost btn-block" style="margin-top:8px;">Другой набор</a>
       <a href="#games" class="btn btn-ghost btn-block" style="margin-top:8px;">К играм</a>
     </div>
@@ -1824,8 +1824,9 @@ export function viewGameStory(game) {
 }
 
 export function viewGameIdea(game, picked = null) {
-  const locked = Number.isInteger(picked);
-  const ok = locked && picked === game.correct;
+  const locked = !!(game.locked || (Number.isInteger(picked) && Number.isInteger(game.correct)));
+  const choice = Number.isInteger(picked) ? picked : game.picked;
+  const ok = locked && game.ok;
   const body = `
     <div class="card card-lg" style="max-width:720px;">
       <p class="game-skill" style="margin-bottom:6px;">Понимание текста</p>
@@ -1837,12 +1838,12 @@ export function viewGameIdea(game, picked = null) {
           let cls = '';
           if (locked) {
             if (i === game.correct) cls = 'correct';
-            else if (i === picked) cls = 'wrong';
-          } else if (picked === i) cls = 'selected';
+            else if (i === choice) cls = 'wrong';
+          } else if (choice === i) cls = 'selected';
           return `<button type="button" class="q-option ${cls}" data-action="idea-pick" data-i="${i}" ${locked ? 'disabled' : ''}><span class="letter">${i + 1}</span>${esc(opt)}</button>`;
         }).join('')}
       </div>
-      ${locked ? `<p class="form-error" style="margin-top:14px; background:${ok ? 'var(--teal-soft)' : 'var(--red-soft)'}; color:${ok ? 'var(--teal-mid)' : 'var(--red)'};">${ok ? 'Верно. ' : 'Не совсем. '}${esc(game.why || '')}</p>
+      ${locked ? `<p class="form-error" style="margin-top:14px; background:${ok ? 'var(--surface-glass)' : 'var(--red-soft)'}; color:${ok ? 'var(--purple-primary)' : 'var(--red)'};">${ok ? 'Верно. ' : 'Не совсем. '}${esc(game.why || '')}</p>
         <a href="#game-idea" class="btn btn-primary btn-block" style="margin-top:12px;">Ещё текст</a>` : ''}
       <a href="#games" class="btn btn-ghost btn-block" style="margin-top:8px;">К играм</a>
     </div>
@@ -1895,27 +1896,34 @@ export function viewGameMemory(game, stage = 'read', answers = {}, done = false)
     return appPage('student', 'games', 'Память текста', null, body);
   }
   const facts = game.facts || [];
-  const allAnswered = facts.every((_, i) => answers[i] === true || answers[i] === false);
-  let score = 0;
-  if (done) facts.forEach((f, i) => { if (answers[i] === f.a) score += 1; });
+  const allAnswered = facts.every((f) => {
+    const key = f.id != null ? f.id : facts.indexOf(f);
+    return answers[key] === true || answers[key] === false || answers[facts.indexOf(f)] === true || answers[facts.indexOf(f)] === false;
+  });
+  const score = done ? (game.score ?? 0) : 0;
+  const total = done ? (game.total ?? facts.length) : facts.length;
+  const detailMap = Object.fromEntries((game.detail || []).map((d) => [d.id, d]));
   const body = `
     <div class="card card-lg" style="max-width:720px;">
       <p class="game-skill" style="margin-bottom:6px;">Проверка памяти</p>
       <p class="section-title">${esc(game.title)}</p>
       <p class="section-sub">Текст скрыт. Ответь по памяти — правда или нет.</p>
       ${facts.map((f, i) => {
-        const picked = answers[i];
+        const id = f.id != null ? f.id : i;
+        const picked = answers[id] ?? answers[i];
         const locked = done;
+        const det = detailMap[id];
+        const expectTrue = det ? det.expected === true : null;
         return `<div class="memory-fact">
           <p class="t-title">${esc(f.q)}</p>
           <div class="memory-btns">
-            <button type="button" class="btn ${picked === true ? 'btn-primary' : 'btn-ghost'} ${locked && f.a === true ? 'ok-border' : ''} ${locked && picked === true && f.a !== true ? 'bad-border' : ''}" data-action="memory-fact" data-i="${i}" data-val="true" ${locked ? 'disabled' : ''}>Правда</button>
-            <button type="button" class="btn ${picked === false ? 'btn-primary' : 'btn-ghost'} ${locked && f.a === false ? 'ok-border' : ''} ${locked && picked === false && f.a !== false ? 'bad-border' : ''}" data-action="memory-fact" data-i="${i}" data-val="false" ${locked ? 'disabled' : ''}>Неправда</button>
+            <button type="button" class="btn ${picked === true ? 'btn-primary' : 'btn-ghost'} ${locked && expectTrue === true ? 'ok-border' : ''} ${locked && picked === true && det && !det.ok ? 'bad-border' : ''}" data-action="memory-fact" data-i="${id}" data-val="true" ${locked ? 'disabled' : ''}>Правда</button>
+            <button type="button" class="btn ${picked === false ? 'btn-primary' : 'btn-ghost'} ${locked && expectTrue === false ? 'ok-border' : ''} ${locked && picked === false && det && !det.ok ? 'bad-border' : ''}" data-action="memory-fact" data-i="${id}" data-val="false" ${locked ? 'disabled' : ''}>Неправда</button>
           </div>
         </div>`;
       }).join('')}
-      ${done ? `<p class="game-score">Результат: ${score} из ${facts.length}</p>
-        <p class="section-sub">${score === facts.length ? 'Отличная память — так же внимательно читай задания для пересказа.' : 'Перечитай текст ещё раз: перед пересказом важно держать факты.'}</p>
+      ${done ? `<p class="game-score">Результат: ${score} из ${total}</p>
+        <p class="section-sub">${score === total ? 'Отличная память — так же внимательно читай задания для пересказа.' : 'Перечитай текст ещё раз: перед пересказом важно держать факты.'}</p>
         <a href="#game-memory" class="btn btn-primary btn-block">Ещё текст</a>` : `<button type="button" class="btn btn-primary btn-block" data-action="memory-check" ${allAnswered ? '' : 'disabled'}>Проверить</button>`}
       <a href="#games" class="btn btn-ghost btn-block" style="margin-top:8px;">К играм</a>
     </div>
@@ -1958,13 +1966,14 @@ export function viewGameSprint(session) {
         ${(q.options || []).map((opt, i) => {
           let cls = '';
           if (locked) {
-            if (i === q.correctIndex) cls = 'correct';
-            else if (i === picked) cls = 'wrong';
+            if (i === picked && session.lastOk) cls = 'correct';
+            else if (i === picked && session.lastOk === false) cls = 'wrong';
+            else if (i === picked) cls = 'selected';
           }
           return `<button type="button" class="q-option ${cls}" data-action="sprint-pick" data-i="${i}" ${locked ? 'disabled' : ''}><span class="letter">${LIT_LETTERS[i] || i + 1}</span>${esc(opt)}</button>`;
         }).join('')}
       </div>
-      ${locked ? `<button type="button" class="btn btn-primary btn-block" data-action="sprint-next" style="margin-top:16px;">${session.index + 1 >= total ? 'Результат' : 'Дальше'}</button>` : ''}
+      ${locked ? `<button type="button" class="btn btn-primary btn-block" data-action="sprint-next" style="margin-top:16px;">${session.done || session.index + 1 >= total ? 'Результат' : 'Дальше'}</button>` : ''}
       <a href="#games" class="btn btn-ghost btn-block" style="margin-top:8px;">К играм</a>
     </div>
   `;

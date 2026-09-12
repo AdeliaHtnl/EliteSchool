@@ -5,7 +5,9 @@
   "description": "EdTech platform for reading, retelling and teacher assessment",
   "scripts": {
     "start": "node server/index.js",
-    "dev": "node server/index.js"
+    "dev": "node server/index.js",
+    "test:security": "node server/security-smoke.js",
+    "test:smoke": "node server/smoke.js"
   },
   "dependencies": {
     "cookie-parser": "^1.4.7",

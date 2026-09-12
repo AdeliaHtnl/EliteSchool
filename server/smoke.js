@@ -1,6 +1,8 @@
-const BASE = 'http://localhost:3000';
+require('./env');
+const BASE = `http://127.0.0.1:${process.env.PORT || 3000}`;
 const fs = require('fs');
 const path = require('path');
+const TEACHER_CODE = String(process.env.TEACHER_LOGIN_CODE || 'local-dev-teacher').toLowerCase();
 
 async function req(pathname, { method = 'GET', body, cookie, form } = {}) {
   const headers = {};
@@ -27,7 +29,7 @@ function assert(cond, msg) {
 }
 
 (async () => {
-  let   r = await req('/api/auth/teacher', { method: 'POST', body: { code: 'elite.mugalim35' } });
+  let   r = await req('/api/auth/teacher', { method: 'POST', body: { code: TEACHER_CODE } });
   assert(r.status === 200 && r.data.user.role === 'TEACHER', 'teacher login');
   const teacher = r.cookie;
   assert(teacher, 'teacher cookie');

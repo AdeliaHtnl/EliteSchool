@@ -1,0 +1,26 @@
+[
+  {
+    "id": "sub-english",
+    "slug": "english",
+    "name": "English",
+    "nameRu": "Английский",
+    "description": "Grammar, vocabulary, reading and mixed practice quizzes.",
+    "icon": "book",
+    "color": "violet",
+    "uiLocale": "en",
+    "order": 1,
+    "isActive": true
+  },
+  {
+    "id": "sub-russian",
+    "slug": "russian",
+    "name": "Russian",
+    "nameRu": "Русский",
+    "description": "Орфография, грамматика, пунктуация и лексика.",
+    "icon": "book",
+    "color": "violet",
+    "uiLocale": "ru",
+    "order": 2,
+    "isActive": true
+  }
+]

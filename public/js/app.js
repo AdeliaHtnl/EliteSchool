@@ -156,11 +156,15 @@ function paintLiteracyQuiz() {
   mount(views.viewLiteracyQuiz(literacyQuiz));
 }
 
-async function loadLiteracyQuiz(quizId) {
+async function loadLiteracyQuiz(quizId, subjectSlug) {
   const id = quizId || 'quiz-ru-literacy';
-  const data = id === 'quiz-ru-literacy'
+  const subject = subjectSlug || (String(id).includes('-en-') || String(id).startsWith('quiz-en') ? 'english' : 'russian');
+  const data = id === 'quiz-ru-literacy' && !subjectSlug
     ? await api('/api/literacy/start', { method: 'POST' })
-    : await api(`/api/tests/quizzes/${encodeURIComponent(id)}/start`, { method: 'POST' });
+    : await api(`/api/tests/quizzes/${encodeURIComponent(id)}/start`, {
+      method: 'POST',
+      body: { subject },
+    });
   const answers = { ...(data.attempt.answers || {}) };
   Object.keys(answers).forEach((k) => { answers[k] = Number(answers[k]); });
   const questions = data.questions || [];
@@ -169,7 +173,7 @@ async function loadLiteracyQuiz(quizId) {
   literacyQuiz = {
     attemptId: data.attempt.id,
     quizId: data.attempt.quizId || id,
-    subjectSlug: data.attempt.subjectSlug || data.quiz?.subjectSlug || 'russian',
+    subjectSlug: data.attempt.subjectSlug || data.quiz?.subjectSlug || subject,
     title: data.quiz?.title || data.attempt.quizTitle || '',
     uiLocale: data.attempt.uiLocale || data.quiz?.uiLocale || 'ru',
     questions,
@@ -644,7 +648,8 @@ root.addEventListener('click', async (e) => {
   if (testsStart) {
     testsStart.disabled = true;
     try {
-      await loadLiteracyQuiz(testsStart.dataset.quiz);
+      const subject = testsStart.dataset.subject || (location.hash.includes('/english') ? 'english' : 'russian');
+      await loadLiteracyQuiz(testsStart.dataset.quiz, subject);
       nav(`tests-quiz/${literacyQuiz.quizId}`);
     } catch (err) {
       toast(err.message, 'err');
@@ -744,26 +749,56 @@ root.addEventListener('click', async (e) => {
   const storyCheck = e.target.closest('[data-action="story-check"]');
   if (storyCheck) {
     const items = [...root.querySelectorAll('[data-story-item]')];
-    const ok = items.length && items.every((el, i) => Number(el.dataset.correct) === i);
-    const msg = root.querySelector('[data-story-msg]');
-    if (msg) {
-      msg.hidden = false;
-      msg.textContent = ok
-        ? 'Верно: события стоят в том порядке, в каком их нужно пересказывать.'
-        : 'Пока неверно. Подумай, что было в начале, в середине и в конце.';
-      msg.style.background = ok ? 'var(--teal-soft)' : 'var(--red-soft)';
-      msg.style.color = ok ? 'var(--teal-mid)' : 'var(--red)';
+    const order = items.map((el) => el.dataset.id);
+    const sessionId = storyCheck.dataset.gameSession || root.querySelector('[data-game-session]')?.dataset.gameSession;
+    storyCheck.disabled = true;
+    try {
+      const data = await api('/api/games/story/check', { method: 'POST', body: { sessionId, order } });
+      const msg = root.querySelector('[data-story-msg]');
+      if (msg) {
+        msg.hidden = false;
+        msg.textContent = data.ok
+          ? 'Верно: события стоят в том порядке, в каком их нужно пересказывать.'
+          : 'Пока неверно. Подумай, что было в начале, в середине и в конце.';
+        msg.style.background = data.ok ? 'var(--surface-glass)' : 'var(--red-soft)';
+        msg.style.color = data.ok ? 'var(--purple-primary)' : 'var(--red)';
+      }
+      if (Array.isArray(data.correctOrder)) {
+        items.forEach((el) => {
+          const expect = data.correctOrder.indexOf(el.dataset.id);
+          const got = order.indexOf(el.dataset.id);
+          el.style.borderColor = expect === got ? 'var(--purple-primary)' : 'var(--red)';
+        });
+      }
+    } catch (err) {
+      toast(err.message, 'err');
+    } finally {
+      if (storyCheck.isConnected) storyCheck.disabled = false;
     }
-    items.forEach((el, i) => {
-      el.style.borderColor = Number(el.dataset.correct) === i ? 'var(--teal)' : 'var(--red)';
-    });
     return;
   }
 
   const ideaPick = e.target.closest('[data-action="idea-pick"]');
-  if (ideaPick && gameIdea) {
+  if (ideaPick && gameIdea && !gameIdea.locked) {
     const i = Number(ideaPick.dataset.i);
-    mount(views.viewGameIdea(gameIdea, i));
+    ideaPick.disabled = true;
+    try {
+      const data = await api('/api/games/idea/check', {
+        method: 'POST',
+        body: { sessionId: gameIdea.sessionId, selectedIndex: i },
+      });
+      gameIdea = {
+        ...gameIdea,
+        locked: true,
+        picked: i,
+        correct: data.correct,
+        why: data.why,
+        ok: data.ok,
+      };
+      mount(views.viewGameIdea(gameIdea, i));
+    } catch (err) {
+      toast(err.message, 'err');
+    }
     return;
   }
 
@@ -792,13 +827,21 @@ root.addEventListener('click', async (e) => {
 
   const clozeCheck = e.target.closest('[data-action="cloze-check"]');
   if (clozeCheck && gameCloze) {
-    const blanks = gameCloze.blanks || [];
-    const ok = blanks.every((b) => gameCloze.filled[b.i] === b.word);
-    gameCloze.ok = ok;
-    gameCloze.message = ok
-      ? 'Все слова на месте. Так же точно подбирай слова в пересказе.'
-      : 'Есть ошибки. Посмотри, какие слова звучат странно в предложении, и поменяй их.';
-    mount(views.viewGameCloze(gameCloze, gameCloze.filled, gameCloze.message, ok));
+    clozeCheck.disabled = true;
+    try {
+      const data = await api('/api/games/cloze/check', {
+        method: 'POST',
+        body: { sessionId: gameCloze.sessionId, filled: gameCloze.filled },
+      });
+      gameCloze.ok = data.ok;
+      gameCloze.message = data.ok
+        ? 'Все слова на месте. Так же точно подбирай слова в пересказе.'
+        : `Есть ошибки: ${data.score} из ${data.total}. Попробуй ещё раз с новым набором.`;
+      mount(views.viewGameCloze(gameCloze, gameCloze.filled, gameCloze.message, data.ok));
+    } catch (err) {
+      toast(err.message, 'err');
+      if (clozeCheck.isConnected) clozeCheck.disabled = false;
+    }
     return;
   }
 
@@ -811,7 +854,7 @@ root.addEventListener('click', async (e) => {
   }
 
   const memFact = e.target.closest('[data-action="memory-fact"]');
-  if (memFact && gameMemory) {
+  if (memFact && gameMemory && !gameMemory.done) {
     const i = Number(memFact.dataset.i);
     gameMemory.answers[i] = memFact.dataset.val === 'true';
     mount(views.viewGameMemory(gameMemory, 'quiz', gameMemory.answers, false));
@@ -820,7 +863,21 @@ root.addEventListener('click', async (e) => {
 
   const memCheck = e.target.closest('[data-action="memory-check"]');
   if (memCheck && gameMemory) {
-    mount(views.viewGameMemory(gameMemory, 'quiz', gameMemory.answers, true));
+    memCheck.disabled = true;
+    try {
+      const data = await api('/api/games/memory/check', {
+        method: 'POST',
+        body: { sessionId: gameMemory.sessionId, answers: gameMemory.answers },
+      });
+      gameMemory.done = true;
+      gameMemory.score = data.score;
+      gameMemory.total = data.total;
+      gameMemory.detail = data.detail || [];
+      mount(views.viewGameMemory(gameMemory, 'quiz', gameMemory.answers, true));
+    } catch (err) {
+      toast(err.message, 'err');
+      if (memCheck.isConnected) memCheck.disabled = false;
+    }
     return;
   }
 
@@ -828,20 +885,43 @@ root.addEventListener('click', async (e) => {
   if (sprintPick && gameSprint && !gameSprint.done) {
     const i = Number(sprintPick.dataset.i);
     const q = gameSprint.questions[gameSprint.index];
-    if (!q || Number.isInteger(gameSprint.picked)) return;
+    if (!q || Number.isInteger(gameSprint.picked) || gameSprint.busy) return;
+    gameSprint.busy = true;
     gameSprint.picked = i;
-    if (i === q.correctIndex) gameSprint.score += 1;
-    mount(views.viewGameSprint(gameSprint));
+    try {
+      const data = await api('/api/games/sprint/answer', {
+        method: 'POST',
+        body: { sessionId: gameSprint.sessionId, questionId: q.id, selectedIndex: i },
+      });
+      gameSprint.lastOk = data.ok;
+      gameSprint.score = data.score;
+      if (data.done) {
+        gameSprint.done = true;
+        gameSprint.score = data.finalScore ?? data.score;
+      }
+      mount(views.viewGameSprint(gameSprint));
+    } catch (err) {
+      gameSprint.picked = null;
+      toast(err.message, 'err');
+      mount(views.viewGameSprint(gameSprint));
+    } finally {
+      gameSprint.busy = false;
+    }
     return;
   }
 
   const sprintNext = e.target.closest('[data-action="sprint-next"]');
   if (sprintNext && gameSprint) {
+    if (gameSprint.done) {
+      mount(views.viewGameSprint(gameSprint));
+      return;
+    }
     if (gameSprint.index + 1 >= gameSprint.questions.length) {
       gameSprint.done = true;
     } else {
       gameSprint.index += 1;
       gameSprint.picked = null;
+      gameSprint.lastOk = null;
     }
     mount(views.viewGameSprint(gameSprint));
   }
@@ -1163,7 +1243,7 @@ async function render() {
       if (token !== renderToken) return;
       if (!data.available || !data.sentences?.length) {
         mount(views.viewGames({ assignmentTitle: null }));
-        toast('Не удалось собрать предложения для игры.', 'err');
+        toast(data.error || 'Не удалось собрать предложения для игры.', 'err');
         return;
       }
       mount(views.viewGameStory(data));
@@ -1184,7 +1264,7 @@ async function render() {
       return;
     }
     if (name === 'game-memory') {
-      gameMemory = { ...(await api('/api/games/memory')), stage: 'read', answers: {} };
+      gameMemory = { ...(await api('/api/games/memory')), stage: 'read', answers: {}, done: false };
       if (token !== renderToken) return;
       mount(views.viewGameMemory(gameMemory, 'read'));
       const wrap = root.querySelector('[data-timer="memory"]');
@@ -1200,7 +1280,16 @@ async function render() {
     if (name === 'game-sprint') {
       const data = await api('/api/games/sprint');
       if (token !== renderToken) return;
-      gameSprint = { questions: data.questions || [], index: 0, score: 0, picked: null, done: false };
+      gameSprint = {
+        sessionId: data.sessionId,
+        questions: data.questions || [],
+        index: 0,
+        score: 0,
+        picked: null,
+        lastOk: null,
+        done: false,
+        language: data.language,
+      };
       mount(views.viewGameSprint(gameSprint));
       return;
     }

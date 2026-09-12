@@ -1,8 +1,10 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { teacherLoginCode } = require('./env');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
+const SEEDS_DIR = path.join(DATA_DIR, 'seeds');
 const DB_PATH = path.join(DATA_DIR, 'db.json');
 const UPLOADS_DIR = path.join(__dirname, '..', 'uploads', 'retellings');
 const LESSONS_DIR = path.join(__dirname, '..', 'uploads', 'lessons');
@@ -43,7 +45,9 @@ function persist() {
   return writeChain;
 }
 
-const TEACHER_CODE = 'elite.mugalim35';
+function currentTeacherCode() {
+  return teacherLoginCode();
+}
 
 function seedIfEmpty() {
   if (db.users.length) return;
@@ -52,7 +56,7 @@ function seedIfEmpty() {
     id: 'u-teacher-1',
     role: 'TEACHER',
     name: 'Учитель',
-    code: TEACHER_CODE,
+    code: currentTeacherCode(),
     groupName: null,
     teacherId: null,
     createdAt,
@@ -66,10 +70,11 @@ function migrateAuth() {
     seedIfEmpty();
     changed = true;
   }
+  const code = currentTeacherCode();
   db.users.forEach((u) => {
     if (u.role !== 'TEACHER') return;
-    if (u.code !== TEACHER_CODE) {
-      u.code = TEACHER_CODE;
+    if (u.code !== code) {
+      u.code = code;
       changed = true;
     }
     if (u.name === 'Елена Викторовна') {
@@ -157,7 +162,7 @@ function migrateTracks() {
     }
   });
   (db.lessons || []).forEach((l) => {
-    if (l.language !== 'RU' && l.language !== 'EN') {
+    if (l.language !== 'RU' && l.language !== 'EN' && l.language !== 'GLOBAL') {
       l.language = 'RU';
       changed = true;
     }
@@ -181,8 +186,18 @@ function token() {
   return crypto.randomBytes(32).toString('hex');
 }
 
+/** Resolve seed file: prefer data/seeds/*, fall back to legacy data/* paths */
+function resolveSeed(...parts) {
+  const seeded = path.join(SEEDS_DIR, ...parts);
+  if (fs.existsSync(seeded)) return seeded;
+  const legacy = path.join(DATA_DIR, ...parts);
+  if (fs.existsSync(legacy)) return legacy;
+  return seeded;
+}
+
 module.exports = {
   DATA_DIR,
+  SEEDS_DIR,
   DB_PATH,
   UPLOADS_DIR,
   LESSONS_DIR,
@@ -193,5 +208,7 @@ module.exports = {
   id,
   token,
   seedIfEmpty,
-  TEACHER_CODE,
+  resolveSeed,
+  currentTeacherCode,
+  TEACHER_CODE: null, // deprecated — use currentTeacherCode()
 };
