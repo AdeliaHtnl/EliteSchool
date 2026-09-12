@@ -78,7 +78,7 @@ function loadAll() {
   const ruLegacy = readJson(resolvePath('literacy-questions.json')).map((q) => ({
     ...q,
     subjectId: 'sub-russian',
-    language: 'RU',
+    language: 'ru',
     quizIds: ['quiz-ru-literacy'],
     explanation: q.explanation || RU_EXPLANATIONS[q.id] || '',
   }));
@@ -90,7 +90,7 @@ function loadAll() {
   const en = readJson(path.join(testsDir, 'questions-english.json')).map((q) => ({
     ...q,
     subjectId: 'sub-english',
-    language: 'EN',
+    language: 'en',
   }));
   // Hard isolation: never mix language across subjects
   questions = [
@@ -114,10 +114,10 @@ function loadAll() {
     if (q.correctIndex < 0 || q.correctIndex > 3) throw new Error(`Bad answer key: ${q.id}`);
     const subject = subjects.find((s) => s.id === q.subjectId);
     if (!subject) throw new Error(`Question ${q.id} has unknown subject`);
-    if (subject.slug === 'english' && q.language && q.language !== 'EN') {
+    if (subject.slug === 'english' && q.language !== 'en') {
       throw new Error(`Question ${q.id} language mismatch`);
     }
-    if (subject.slug === 'russian' && q.language && q.language !== 'RU') {
+    if (subject.slug === 'russian' && q.language !== 'ru') {
       throw new Error(`Question ${q.id} language mismatch`);
     }
     const ids = q.quizIds || [];
@@ -147,8 +147,11 @@ function getQuiz(idOrSlug, subjectId) {
 
 function questionsForQuiz(quiz) {
   if (!quiz) return [];
+  const expectedLang = quiz.subjectId === 'sub-english' ? 'en' : 'ru';
   let list = questions.filter(
-    (q) => (q.quizIds || []).includes(quiz.id) && q.subjectId === quiz.subjectId
+    (q) => (q.quizIds || []).includes(quiz.id)
+      && q.subjectId === quiz.subjectId
+      && q.language === expectedLang
   );
   if (quiz.categoryFilter) {
     list = list.filter((q) => q.category === quiz.categoryFilter);

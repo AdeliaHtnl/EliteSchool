@@ -4,12 +4,28 @@ const crypto = require('crypto');
 const express = require('express');
 const cookieParser = require('cookie-parser');
 const multer = require('multer');
-const { isProduction, teacherLoginCode } = require('./env');
+const {
+  isProduction,
+  teacherLoginCode,
+  frontendOrigins,
+  sessionCookieOptions,
+} = require('./env');
 const { rateLimit } = require('./rateLimit');
 const gameSessions = require('./gameSessions');
 const db = require('./db');
+const pg = require('./pg');
+const r2 = require('./r2');
 const literacy = require('./literacy');
 const quizzes = require('./quizzes');
+const {
+  normalizeLanguage,
+  requireLanguage,
+  getUserLanguage,
+  subjectSlugForLanguage,
+  languageForSubjectSlug,
+  languageForSubjectId,
+  subjectIdForLanguage,
+} = require('./lang');
 
 const PORT = Number(process.env.PORT) || 3000;
 const COOKIE = 'sid';
@@ -44,16 +60,49 @@ const MIME_EXT = {
   'application/pdf': '.pdf',
 };
 
-db.load();
-
 const app = express();
 app.disable('x-powered-by');
+app.set('trust proxy', 1);
 app.use(express.json({ limit: '2mb' }));
 app.use(cookieParser());
+
+// CORS whitelist (Vercel frontend ↔ Render API)
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  const allowed = frontendOrigins();
+  if (origin && allowed.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+    res.setHeader('Vary', 'Origin');
+  }
+  if (req.method === 'OPTIONS') {
+    return res.status(204).end();
+  }
+  next();
+});
+
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'same-origin');
   next();
+});
+
+app.get('/health', (_req, res) => {
+  res.json({ status: 'ok' });
+});
+
+app.get('/health/db', async (_req, res) => {
+  try {
+    if (pg.hasDatabaseUrl()) {
+      const h = await pg.healthCheck();
+      return res.status(h.ok ? 200 : 503).json({ status: h.ok ? 'ok' : 'error', mode: h.mode });
+    }
+    res.json({ status: 'ok', mode: 'json' });
+  } catch (err) {
+    res.status(503).json({ status: 'error', mode: 'unknown' });
+  }
 });
 
 function store() {
@@ -86,8 +135,11 @@ function publicUser(u) {
 }
 
 function parseLang(value) {
-  const s = String(value || '').trim().toUpperCase();
-  return s === 'EN' || s === 'ENGLISH' ? 'EN' : 'RU';
+  return normalizeLanguage(value) || 'ru';
+}
+
+function parseLangStrict(value) {
+  return requireLanguage(value);
 }
 
 function parseLevel(value) {
@@ -407,19 +459,10 @@ function mimeBase(m) {
   return String(m || '').split(';')[0].trim().toLowerCase();
 }
 
-const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => {
-    if (!fs.existsSync(db.UPLOADS_DIR)) fs.mkdirSync(db.UPLOADS_DIR, { recursive: true });
-    cb(null, db.UPLOADS_DIR);
-  },
-  filename: (_req, file, cb) => {
-    const ext = MIME_EXT[mimeBase(file.mimetype)] || path.extname(file.originalname) || '.bin';
-    cb(null, `${crypto.randomUUID()}${ext}`);
-  },
-});
+const memoryStorage = multer.memoryStorage();
 
 const upload = multer({
-  storage,
+  storage: memoryStorage,
   limits: { fileSize: MAX_UPLOAD_BYTES },
   fileFilter: (_req, file, cb) => {
     const m = mimeBase(file.mimetype);
@@ -431,21 +474,8 @@ const upload = multer({
   },
 });
 
-const lessonStorage = multer.diskStorage({
-  destination: (_req, _file, cb) => {
-    if (!fs.existsSync(db.LESSONS_DIR)) fs.mkdirSync(db.LESSONS_DIR, { recursive: true });
-    cb(null, db.LESSONS_DIR);
-  },
-  filename: (_req, file, cb) => {
-    const m = mimeBase(file.mimetype);
-    const ext = m === 'application/pdf' ? '.pdf'
-      : (MIME_EXT[m] || path.extname(file.originalname) || '.bin');
-    cb(null, `${crypto.randomUUID()}${ext}`);
-  },
-});
-
 const uploadLesson = multer({
-  storage: lessonStorage,
+  storage: memoryStorage,
   limits: { fileSize: 200 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     const m = mimeBase(file.mimetype);
@@ -455,14 +485,43 @@ const uploadLesson = multer({
   },
 });
 
+async function persistUpload(file, type) {
+  if (!file || !file.buffer) return null;
+  if (r2.r2Configured()) {
+    const up = await r2.uploadBuffer({
+      buffer: file.buffer,
+      contentType: file.mimetype,
+      type,
+      originalName: file.originalname,
+    });
+    return {
+      mediaKey: up.key,
+      mediaUrl: up.url,
+      mediaPath: null,
+      mimeType: up.mimeType,
+      size: up.size,
+      originalName: path.basename(String(file.originalname || 'file')),
+    };
+  }
+  if (isProduction()) {
+    const err = new Error('Media storage (R2) is not configured.');
+    err.status = 500;
+    throw err;
+  }
+  const dir = type === 'lessons' ? db.LESSONS_DIR : db.UPLOADS_DIR;
+  const local = r2.writeLocal(dir, file.originalname, file.mimetype, file.buffer);
+  return {
+    mediaKey: null,
+    mediaUrl: null,
+    mediaPath: local.filename,
+    mimeType: file.mimetype,
+    size: file.buffer.length,
+    originalName: path.basename(String(file.originalname || 'file')),
+  };
+}
+
 function setSessionCookie(res, token) {
-  res.cookie(COOKIE, token, {
-    httpOnly: true,
-    sameSite: 'lax',
-    secure: isProduction(),
-    path: '/',
-    maxAge: SESSION_DAYS * 24 * 60 * 60 * 1000,
-  });
+  res.cookie(COOKIE, token, sessionCookieOptions());
 }
 
 function pruneSessions() {
@@ -569,7 +628,7 @@ app.post('/api/auth/register', authLimiter, (req, res) => {
   if (!teacher) {
     return res.status(500).json({ error: 'На платформе ещё нет учителя.' });
   }
-  const language = parseLang(req.body?.language);
+  const language = parseLangStrict(req.body?.language);
   const enrollmentLevel = parseLevel(req.body?.enrollmentLevel || req.body?.level);
   const user = {
     id: db.id('u'),
@@ -585,7 +644,7 @@ app.post('/api/auth/register', authLimiter, (req, res) => {
     lastActiveAt: iso(),
   };
   store().users.push(user);
-  const langWord = language === 'EN' ? 'английском' : 'русском';
+  const langWord = language === 'en' ? 'английском' : 'русском';
   const levelWord = enrollmentLevel === 'INTERMEDIATE' ? 'средний' : enrollmentLevel === 'ADVANCED' ? 'продвинутый' : 'начальный';
   notify(teacher.id, {
     type: 'STUDENT',
@@ -950,25 +1009,42 @@ app.get('/api/retellings/:id', requireAuth, (req, res) => {
   });
 });
 
-app.get('/api/retellings/:id/media', requireAuth, (req, res) => {
-  const r = store().retellings.find((x) => x.id === req.params.id);
-  if (!r) return res.status(404).json({ error: 'Файл не найден.' });
-  const user = req.auth.user;
-  const student = store().users.find((u) => u.id === r.studentId);
-  if (user.role === 'STUDENT' && r.studentId !== user.id) {
-    return res.status(403).json({ error: 'Нет доступа к этой записи.' });
+app.get('/api/retellings/:id/media', requireAuth, async (req, res) => {
+  try {
+    const r = store().retellings.find((x) => x.id === req.params.id);
+    if (!r) return res.status(404).json({ error: 'Файл не найден.' });
+    const user = req.auth.user;
+    const student = store().users.find((u) => u.id === r.studentId);
+    if (user.role === 'STUDENT' && r.studentId !== user.id) {
+      return res.status(403).json({ error: 'Нет доступа к этой записи.' });
+    }
+    if (user.role === 'TEACHER' && !teacherOwnsStudent(user, student)) {
+      return res.status(403).json({ error: 'Нет доступа к этой записи.' });
+    }
+    if (r.mediaUrl && String(r.mediaUrl).startsWith('http')) {
+      return res.redirect(302, r.mediaUrl);
+    }
+    if (r.mediaKey && r2.r2Configured()) {
+      const obj = await r2.getObject(r.mediaKey);
+      if (!obj) return res.status(404).json({ error: 'Файл записи отсутствует.' });
+      res.setHeader('Content-Type', r.mimeType || obj.mimeType || 'application/octet-stream');
+      res.setHeader('Content-Disposition', 'inline');
+      return res.send(obj.buffer);
+    }
+    if (!r.mediaPath) return res.status(404).json({ error: 'Файл записи отсутствует на сервере.' });
+    const filePath = path.join(db.UPLOADS_DIR, path.basename(r.mediaPath));
+    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Файл записи отсутствует на сервере.' });
+    res.setHeader('Content-Type', r.mimeType || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `inline; filename="${path.basename(filePath)}"`);
+    return res.sendFile(filePath);
+  } catch (err) {
+    console.error('media serve failed:', err.message);
+    return res.status(500).json({ error: 'Не удалось отдать файл.' });
   }
-  if (user.role === 'TEACHER' && !teacherOwnsStudent(user, student)) {
-    return res.status(403).json({ error: 'Нет доступа к этой записи.' });
-  }
-  const filePath = path.join(db.UPLOADS_DIR, path.basename(r.mediaPath));
-  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Файл записи отсутствует на сервере.' });
-  res.setHeader('Content-Type', r.mimeType || 'application/octet-stream');
-  res.setHeader('Content-Disposition', `inline; filename="${path.basename(filePath)}"`);
-  res.sendFile(filePath);
 });
 
-function handleUpload(req, res) {
+async function handleUpload(req, res) {
+  try {
   const user = req.auth.user;
   const assignmentId = String(req.body?.assignmentId || '');
   const type = String(req.body?.type || '').toUpperCase();
@@ -1003,18 +1079,22 @@ function handleUpload(req, res) {
     return res.status(400).json({ error: 'Сначала завершите чтение и подготовку.' });
   }
   if (!req.file) return res.status(400).json({ error: 'Файл записи не получен.' });
-  if (!req.file.size || req.file.size < 200) {
-    try { fs.unlinkSync(req.file.path); } catch (_) { /* ignore */ }
+  const size = req.file.size || (req.file.buffer && req.file.buffer.length) || 0;
+  if (!size || size < 200) {
     return res.status(400).json({ error: 'Файл записи пустой. Запишите пересказ ещё раз.' });
   }
 
+  const stored = await persistUpload(req.file, 'retellings');
   const retelling = {
     id: db.id('r'),
     assignmentId: a.id,
     studentId: user.id,
     type,
-    mediaPath: req.file.filename,
-    mimeType: mimeBase(req.file.mimetype),
+    language: assignmentLang(a),
+    mediaPath: stored.mediaPath,
+    mediaKey: stored.mediaKey,
+    mediaUrl: stored.mediaUrl,
+    mimeType: mimeBase(stored.mimeType || req.file.mimetype),
     duration: Math.round(duration),
     submittedAt: iso(),
     status: 'SUBMITTED',
@@ -1043,6 +1123,10 @@ function handleUpload(req, res) {
   refreshAssignmentStatus(a);
   save();
   res.status(201).json({ retelling: publicRetelling(retelling) });
+  } catch (err) {
+    console.error('upload failed:', err.message);
+    res.status(err.status || 500).json({ error: err.message || 'Не удалось сохранить запись.' });
+  }
 }
 
 app.post('/api/retellings', requireAuth, requireRole('STUDENT'), (req, res) => {
@@ -1131,9 +1215,8 @@ app.get('/api/student/dashboard', requireAuth, requireRole('STUDENT'), (req, res
     nextAssignment: next || null,
     assignments: assignments.slice(0, 8),
     unread: notifications.length,
-    literacy: literacyStatsForStudent(user.id),
-    literacyRussian: literacyStatsForStudent(user.id, { subjectId: 'sub-russian' }),
-    literacyEnglish: literacyStatsForStudent(user.id, { subjectId: 'sub-english' }),
+    literacy: literacyStatsForStudent(user.id, { subjectId: subjectIdForLanguage(getUserLanguage(user)) }),
+    language: getUserLanguage(user),
   });
 });
 
@@ -1146,7 +1229,7 @@ const GAME_PASSAGES = JSON.parse(fs.readFileSync(
     ? path.join(__dirname, '..', 'data', 'seeds', 'game-passages.json')
     : path.join(__dirname, '..', 'data', 'game-passages.json'),
   'utf8'
-)).map((p) => ({ ...p, language: parseLang(p.language || 'RU') }));
+)).map((p) => ({ ...p, language: parseLang(p.language || 'ru') }));
 
 function passagesForLang(lang) {
   const L = parseLang(lang);
@@ -1269,7 +1352,7 @@ app.get('/api/games', requireAuth, requireRole('STUDENT'), (req, res) => {
       { id: 'idea', title: 'Главная мысль', skill: 'Понимание текста', ready: true },
       { id: 'cloze', title: 'Вставь слово', skill: 'Словарный запас', ready: true },
       { id: 'memory', title: 'Память текста', skill: 'Внимательное чтение', ready: true },
-      { id: 'sprint', title: language === 'EN' ? 'English sprint' : 'Спринт грамотности', skill: language === 'EN' ? 'Grammar & vocab' : 'Орфография и речь', ready: true },
+      { id: 'sprint', title: language === 'en' ? 'English sprint' : 'Спринт грамотности', skill: language === 'en' ? 'Grammar & vocab' : 'Орфография и речь', ready: true },
     ],
   });
 });
@@ -1296,7 +1379,7 @@ app.get('/api/games/story', requireAuth, requireRole('STUDENT'), (req, res) => {
         title: null,
         sentences: [],
         language,
-        error: language === 'EN' ? 'No English practice texts yet.' : 'Нет текстов для игры.',
+        error: language === 'en' ? 'No English practice texts yet.' : 'Нет текстов для игры.',
       });
     }
     built = buildStorySession(passage.title, passage.text, {
@@ -1329,7 +1412,7 @@ app.post('/api/games/story/check', requireAuth, requireRole('STUDENT'), (req, re
 app.get('/api/games/idea', requireAuth, requireRole('STUDENT'), (req, res) => {
   const language = userLang(req.auth.user);
   const p = pickPassage(language);
-  if (!p) return res.status(400).json({ error: language === 'EN' ? 'No English passages.' : 'Нет текстов для игры.' });
+  if (!p) return res.status(400).json({ error: language === 'en' ? 'No English passages.' : 'Нет текстов для игры.' });
   const payload = gameSessions.createSession(req.auth.user.id, 'idea', {
     correct: p.mainCorrect,
     why: p.mainWhy,
@@ -1366,7 +1449,7 @@ app.get('/api/games/cloze', requireAuth, requireRole('STUDENT'), (req, res) => {
     source = 'assignment';
   } else {
     const p = pickPassage(language);
-    if (!p) return res.status(400).json({ error: language === 'EN' ? 'No English text.' : 'Нет текста для игры.' });
+    if (!p) return res.status(400).json({ error: language === 'en' ? 'No English text.' : 'Нет текста для игры.' });
     title = p.title;
     text = p.text;
     source = 'practice';
@@ -1396,7 +1479,7 @@ app.post('/api/games/cloze/check', requireAuth, requireRole('STUDENT'), (req, re
 app.get('/api/games/memory', requireAuth, requireRole('STUDENT'), (req, res) => {
   const language = userLang(req.auth.user);
   const p = pickPassage(language);
-  if (!p) return res.status(400).json({ error: language === 'EN' ? 'No English passages.' : 'Нет текстов для игры.' });
+  if (!p) return res.status(400).json({ error: language === 'en' ? 'No English passages.' : 'Нет текстов для игры.' });
   const facts = shuffleInPlace((p.facts || []).map((f, i) => ({ id: i, q: f.q, a: !!f.a })));
   const payload = gameSessions.createSession(req.auth.user.id, 'memory', {
     facts: facts.map((f) => ({ id: f.id, a: f.a })),
@@ -1429,7 +1512,7 @@ app.post('/api/games/memory/check', requireAuth, requireRole('STUDENT'), (req, r
 app.get('/api/games/sprint', requireAuth, requireRole('STUDENT'), (req, res) => {
   const language = userLang(req.auth.user);
   let bank;
-  if (language === 'EN') {
+  if (language === 'en') {
     const quiz = quizzes.getQuiz('quiz-en-general') || quizzes.getQuiz('quiz-en-grammar');
     bank = shuffleInPlace([...quizzes.questionsForQuiz(quiz)]);
   } else {
@@ -1437,7 +1520,7 @@ app.get('/api/games/sprint', requireAuth, requireRole('STUDENT'), (req, res) => 
   }
   const picked = bank.slice(0, 8);
   if (!picked.length) {
-    return res.status(400).json({ error: language === 'EN' ? 'No English questions.' : 'Нет вопросов.' });
+    return res.status(400).json({ error: language === 'en' ? 'No English questions.' : 'Нет вопросов.' });
   }
   const payload = gameSessions.createSession(req.auth.user.id, 'sprint', {
     answers: Object.fromEntries(picked.map((q) => [q.id, q.correctIndex])),
@@ -1447,7 +1530,7 @@ app.get('/api/games/sprint', requireAuth, requireRole('STUDENT'), (req, res) => 
   }, {
     language,
     total: picked.length,
-    questions: picked.map((q) => quizzes.publicQuestion(q, language === 'EN' ? 'en' : 'ru')),
+    questions: picked.map((q) => quizzes.publicQuestion(q, language === 'en' ? 'en' : 'ru')),
   });
   res.json(payload);
 });
@@ -1608,8 +1691,11 @@ app.get('/api/teacher/dashboard', requireAuth, requireRole('TEACHER'), (req, res
     activity: activityCounts,
     pending: pending.sort((a, b) => new Date(b.submittedAt) - new Date(a.submittedAt)).slice(0, 8).map((r) => publicRetelling(r)),
     tracks: {
-      RU: trackBundle(teacher.id, 'RU'),
-      EN: trackBundle(teacher.id, 'EN'),
+      ru: trackBundle(teacher.id, 'ru'),
+      en: trackBundle(teacher.id, 'en'),
+      // legacy keys for older clients
+      RU: trackBundle(teacher.id, 'ru'),
+      EN: trackBundle(teacher.id, 'en'),
     },
   });
 });
@@ -1806,6 +1892,11 @@ function answerQuizAttempt(attempt, user, questionId, selectedIndex) {
     err.status = 403;
     throw err;
   }
+  if (user.role === 'STUDENT' && languageForSubjectId(attempt.subjectId) !== getUserLanguage(user)) {
+    const err = new Error('Нет доступа к тесту другого языка.');
+    err.status = 403;
+    throw err;
+  }
   if (attempt.status !== 'IN_PROGRESS') {
     const err = new Error('Тест уже завершён.');
     err.status = 400;
@@ -1829,6 +1920,11 @@ function answerQuizAttempt(attempt, user, questionId, selectedIndex) {
 function submitQuizAttempt(attempt, user, incomingAnswers) {
   if (!attempt || attempt.studentId !== user.id) {
     const err = new Error('Нет доступа к этому тесту.');
+    err.status = 403;
+    throw err;
+  }
+  if (user.role === 'STUDENT' && languageForSubjectId(attempt.subjectId) !== getUserLanguage(user)) {
+    const err = new Error('Нет доступа к тесту другого языка.');
     err.status = 403;
     throw err;
   }
@@ -1882,6 +1978,9 @@ app.get('/api/literacy/current', requireAuth, requireRole('STUDENT'), (req, res)
 
 app.post('/api/literacy/start', requireAuth, requireRole('STUDENT'), (req, res) => {
   try {
+    if (getUserLanguage(req.auth.user) !== 'ru') {
+      return res.status(403).json({ error: 'Literacy diagnostic is only for Russian track. Use English quizzes.' });
+    }
     const quiz = quizzes.getQuiz('quiz-ru-literacy');
     const payload = startQuizAttempt(req.auth.user, quiz);
     res.json(payload);
@@ -1920,6 +2019,9 @@ app.get('/api/literacy/attempts/:id', requireAuth, (req, res) => {
   if (user.role === 'STUDENT' && attempt.studentId !== user.id) {
     return res.status(403).json({ error: 'Нет доступа к этому результату.' });
   }
+  if (user.role === 'STUDENT' && languageForSubjectId(attempt.subjectId) !== getUserLanguage(user)) {
+    return res.status(403).json({ error: 'Нет доступа к результату другого языка.' });
+  }
   if (user.role === 'TEACHER' && !teacherOwnsStudent(user, student)) {
     return res.status(403).json({ error: 'Нет доступа к этому результату.' });
   }
@@ -1939,19 +2041,77 @@ app.get('/api/literacy/attempts/:id', requireAuth, (req, res) => {
 });
 
 app.get('/api/literacy/history', requireAuth, requireRole('STUDENT'), (req, res) => {
+  if (getUserLanguage(req.auth.user) !== 'ru') {
+    return res.status(403).json({ error: 'Literacy history is only for the Russian track.' });
+  }
   res.json({ stats: literacyStatsForStudent(req.auth.user.id, { quizId: 'quiz-ru-literacy' }) });
 });
 
 app.get('/api/literacy/topics/:slug', requireAuth, (req, res) => {
+  if (req.auth.user.role === 'STUDENT' && getUserLanguage(req.auth.user) !== 'ru') {
+    return res.status(403).json({ error: 'Learning topics are only for the Russian track.' });
+  }
   const topic = literacy.getTopic(req.params.slug);
   if (!topic) return res.status(404).json({ error: 'Материал не найден.' });
   res.json({ topic });
 });
 
+function assertStudentOwnsQuizLanguage(user, quiz) {
+  const userLang = getUserLanguage(user);
+  const quizLang = languageForSubjectId(quiz.subjectId);
+  if (!quizLang || quizLang !== userLang) {
+    const err = new Error(userLang === 'en' ? 'This quiz is not available for your language.' : 'Этот тест недоступен для вашего языка.');
+    err.status = 403;
+    throw err;
+  }
+}
+
+function studentSubjectOr403(user, slug) {
+  const userLang = getUserLanguage(user);
+  const slugLang = languageForSubjectSlug(slug);
+  if (!slugLang || slugLang !== userLang) {
+    const err = new Error(userLang === 'en' ? 'Subject not available.' : 'Предмет недоступен.');
+    err.status = 403;
+    throw err;
+  }
+  return quizzes.getSubject(subjectSlugForLanguage(userLang));
+}
+
 app.get('/api/tests/catalog', requireAuth, requireRole('STUDENT'), (req, res) => {
-  const catalog = quizzes.listCatalog().map((subject) => ({
-    ...subject,
-    quizzes: subject.quizzes.map((q) => {
+  const userLang = getUserLanguage(req.auth.user);
+  const allowedSlug = subjectSlugForLanguage(userLang);
+  const catalog = quizzes.listCatalog()
+    .filter((subject) => subject.slug === allowedSlug || languageForSubjectId(subject.id) === userLang)
+    .map((subject) => ({
+      ...subject,
+      language: userLang,
+      quizzes: subject.quizzes.map((q) => {
+        const progress = findInProgressAttempt(req.auth.user.id, q.id);
+        const stats = literacyStatsForStudent(req.auth.user.id, { quizId: q.id });
+        return {
+          ...q,
+          progress: progress
+            ? { attemptId: progress.id, answeredCount: Object.keys(progress.answers || {}).length, questionCount: progress.questionIds.length }
+            : null,
+          lastPercent: stats.lastPercent,
+          attempts: stats.attempts,
+        };
+      }),
+    }));
+  res.json({
+    language: userLang,
+    subjectSlug: allowedSlug,
+    subjects: catalog,
+  });
+});
+
+app.get('/api/tests/subjects/:slug', requireAuth, requireRole('STUDENT'), (req, res) => {
+  try {
+    const subject = studentSubjectOr403(req.auth.user, req.params.slug);
+    if (!subject || !subject.isActive) return res.status(404).json({ error: 'Предмет не найден.' });
+    const list = quizzes.listCatalog().find((s) => s.id === subject.id);
+    if (!list) return res.status(404).json({ error: 'Предмет не найден.' });
+    const quizzesOut = list.quizzes.map((q) => {
       const progress = findInProgressAttempt(req.auth.user.id, q.id);
       const stats = literacyStatsForStudent(req.auth.user.id, { quizId: q.id });
       return {
@@ -1962,47 +2122,35 @@ app.get('/api/tests/catalog', requireAuth, requireRole('STUDENT'), (req, res) =>
         lastPercent: stats.lastPercent,
         attempts: stats.attempts,
       };
-    }),
-  }));
-  res.json({ subjects: catalog });
-});
-
-app.get('/api/tests/subjects/:slug', requireAuth, requireRole('STUDENT'), (req, res) => {
-  const subject = quizzes.getSubject(req.params.slug);
-  if (!subject || !subject.isActive) return res.status(404).json({ error: 'Предмет не найден.' });
-  const list = quizzes.listCatalog().find((s) => s.id === subject.id);
-  if (!list) return res.status(404).json({ error: 'Предмет не найден.' });
-  const quizzesOut = list.quizzes.map((q) => {
-    const progress = findInProgressAttempt(req.auth.user.id, q.id);
-    const stats = literacyStatsForStudent(req.auth.user.id, { quizId: q.id });
-    return {
-      ...q,
-      progress: progress
-        ? { attemptId: progress.id, answeredCount: Object.keys(progress.answers || {}).length, questionCount: progress.questionIds.length }
-        : null,
-      lastPercent: stats.lastPercent,
-      attempts: stats.attempts,
-    };
-  });
-  res.json({
-    subject: { ...list, quizzes: quizzesOut },
-    stats: literacyStatsForStudent(req.auth.user.id, { subjectId: subject.id }),
-  });
+    });
+    res.json({
+      language: getUserLanguage(req.auth.user),
+      subject: { ...list, language: getUserLanguage(req.auth.user), quizzes: quizzesOut },
+      stats: literacyStatsForStudent(req.auth.user.id, { subjectId: subject.id }),
+    });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message || 'Ошибка.' });
+  }
 });
 
 app.get('/api/tests/quizzes/:id', requireAuth, requireRole('STUDENT'), (req, res) => {
-  const quiz = quizzes.getQuiz(req.params.id);
-  if (!quiz || !quiz.isActive) return res.status(404).json({ error: 'Тест не найден.' });
-  const progress = findInProgressAttempt(req.auth.user.id, quiz.id);
-  const stats = literacyStatsForStudent(req.auth.user.id, { quizId: quiz.id });
-  res.json({
-    quiz: quizzes.publicQuiz(quiz, {
-      progress: progress
-        ? { attemptId: progress.id, answeredCount: Object.keys(progress.answers || {}).length, questionCount: progress.questionIds.length }
-        : null,
-    }),
-    stats,
-  });
+  try {
+    const quiz = quizzes.getQuiz(assertId(req.params.id, 'quizId'));
+    if (!quiz || !quiz.isActive) return res.status(404).json({ error: 'Тест не найден.' });
+    assertStudentOwnsQuizLanguage(req.auth.user, quiz);
+    const progress = findInProgressAttempt(req.auth.user.id, quiz.id);
+    const stats = literacyStatsForStudent(req.auth.user.id, { quizId: quiz.id });
+    res.json({
+      quiz: quizzes.publicQuiz(quiz, {
+        progress: progress
+          ? { attemptId: progress.id, answeredCount: Object.keys(progress.answers || {}).length, questionCount: progress.questionIds.length }
+          : null,
+      }),
+      stats,
+    });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message || 'Ошибка.' });
+  }
 });
 
 app.post('/api/tests/quizzes/:id/start', requireAuth, requireRole('STUDENT'), (req, res) => {
@@ -2010,13 +2158,8 @@ app.post('/api/tests/quizzes/:id/start', requireAuth, requireRole('STUDENT'), (r
     const quizId = assertId(req.params.id, 'quizId');
     const quiz = quizzes.getQuiz(quizId);
     if (!quiz || !quiz.isActive) return res.status(404).json({ error: 'Тест не найден.' });
-    const subjectHint = req.body?.subject || req.query.subject;
-    if (subjectHint) {
-      const subject = quizzes.getSubject(String(subjectHint));
-      if (!subject || subject.id !== quiz.subjectId) {
-        return res.status(403).json({ error: 'Этот тест принадлежит другому предмету.' });
-      }
-    }
+    // Source of truth: authenticated user language (ignore body/query language)
+    assertStudentOwnsQuizLanguage(req.auth.user, quiz);
     res.json(startQuizAttempt(req.auth.user, quiz));
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message || 'Ошибка запуска теста.' });
@@ -2026,6 +2169,13 @@ app.post('/api/tests/quizzes/:id/start', requireAuth, requireRole('STUDENT'), (r
 app.get('/api/tests/current', requireAuth, requireRole('STUDENT'), (req, res) => {
   const quizId = String(req.query.quizId || '');
   if (!quizId) return res.status(400).json({ error: 'Укажите quizId.' });
+  const quiz = quizzes.getQuiz(quizId);
+  if (!quiz || !quiz.isActive) return res.status(404).json({ error: 'Тест не найден.' });
+  try {
+    assertStudentOwnsQuizLanguage(req.auth.user, quiz);
+  } catch (err) {
+    return res.status(err.status || 403).json({ error: err.message });
+  }
   const attempt = findInProgressAttempt(req.auth.user.id, quizId);
   res.json({ attempt: attempt ? publicLiteracyAttempt(attempt, { includeAnswers: true }) : null });
 });
@@ -2060,6 +2210,9 @@ app.get('/api/tests/attempts/:id', requireAuth, (req, res) => {
   if (user.role === 'STUDENT' && attempt.studentId !== user.id) {
     return res.status(403).json({ error: 'Нет доступа к этому результату.' });
   }
+  if (user.role === 'STUDENT' && languageForSubjectId(attempt.subjectId) !== getUserLanguage(user)) {
+    return res.status(403).json({ error: 'Нет доступа к результату другого языка.' });
+  }
   if (user.role === 'TEACHER' && !teacherOwnsStudent(user, student)) {
     return res.status(403).json({ error: 'Нет доступа к этому результату.' });
   }
@@ -2079,16 +2232,13 @@ app.get('/api/tests/attempts/:id', requireAuth, (req, res) => {
 });
 
 app.get('/api/tests/history', requireAuth, requireRole('STUDENT'), (req, res) => {
-  const quizId = req.query.quizId ? String(req.query.quizId) : null;
-  const subjectId = req.query.subjectId ? String(req.query.subjectId) : null;
-  const subjectSlug = req.query.subject ? String(req.query.subject) : null;
-  let sid = subjectId;
-  if (subjectSlug) {
-    const subject = quizzes.getSubject(subjectSlug);
-    if (!subject) return res.status(404).json({ error: 'Предмет не найден.' });
-    sid = subject.id;
-  }
-  res.json({ stats: literacyStatsForStudent(req.auth.user.id, { quizId, subjectId: sid }) });
+  const userLang = getUserLanguage(req.auth.user);
+  const sid = subjectIdForLanguage(userLang);
+  // Ignore client-supplied subject/language — always use authenticated user language
+  res.json({
+    language: userLang,
+    stats: literacyStatsForStudent(req.auth.user.id, { subjectId: sid }),
+  });
 });
 
 app.get('/api/teacher/literacy', requireAuth, requireRole('TEACHER'), (req, res) => {
@@ -2099,7 +2249,7 @@ app.get('/api/teacher/literacy', requireAuth, requireRole('TEACHER'), (req, res)
       id: u.id,
       name: u.name,
       code: u.code,
-      language: u.language || 'RU',
+      language: getUserLanguage(u),
       ...literacyStatsForStudent(u.id),
       russian: literacyStatsForStudent(u.id, { subjectId: 'sub-russian' }),
       english: literacyStatsForStudent(u.id, { subjectId: 'sub-english' }),
@@ -2118,7 +2268,7 @@ app.get('/api/teacher/literacy/students/:id', requireAuth, requireRole('TEACHER'
       id: student.id,
       name: student.name,
       code: student.code,
-      language: student.language || 'RU',
+      language: getUserLanguage(student),
       ...literacyStatsForStudent(student.id),
       russian: literacyStatsForStudent(student.id, { subjectId: 'sub-russian' }),
       english: literacyStatsForStudent(student.id, { subjectId: 'sub-english' }),
@@ -2146,12 +2296,12 @@ function publicLesson(l, { forTeacher = false } = {}) {
     category: l.category || LESSON_TYPE_META[l.type]?.category || '',
     level: l.level || '',
     targetLevel: l.targetLevel || null,
-    language: parseLang(l.language),
+    language: lessonLanguageRaw(l),
     note: l.note || '',
     videoUrl: l.videoUrl || '',
     duration: l.duration || '',
     createdAt: l.createdAt,
-    hasFile: !!l.filePath,
+    hasFile: !!(l.filePath || l.fileKey || l.mediaUrl),
     mimeType: l.mimeType || '',
     originalName: l.originalName || '',
   };
@@ -2169,12 +2319,20 @@ function publicLesson(l, { forTeacher = false } = {}) {
   return out;
 }
 
+function lessonLanguageRaw(lesson) {
+  const raw = String(lesson?.language || '').trim();
+  if (raw.toUpperCase() === 'GLOBAL') return 'GLOBAL';
+  return parseLang(raw);
+}
+
 function lessonVisibleTo(lesson, user) {
   if (!lesson || !user) return false;
   if (user.role === 'TEACHER') return lesson.teacherId === user.id;
   if (user.role !== 'STUDENT' || lesson.teacherId !== user.teacherId) return false;
-  if (parseLang(lesson.language) === 'GLOBAL') return true;
-  if (parseLang(lesson.language) !== userLang(user)) return false;
+  const lessonLang = lessonLanguageRaw(lesson);
+  // Do not show GLOBAL / unknown lessons to both tracks automatically
+  if (lessonLang === 'GLOBAL') return false;
+  if (lessonLang !== userLang(user)) return false;
   if (lesson.studentIds && lesson.studentIds.length) return lesson.studentIds.includes(user.id);
   if (lesson.targetLevel) return userLevel(user) === parseLevel(lesson.targetLevel);
   return true;
@@ -2192,15 +2350,22 @@ app.get('/api/lessons', requireAuth, (req, res) => {
   const section = String(req.query.section || '').toUpperCase();
   const user = req.auth.user;
   let list = store().lessons || [];
-  if (user.role === 'TEACHER') list = list.filter((l) => l.teacherId === user.id);
-  else list = list.filter((l) => lessonVisibleTo(l, user));
-  if (section === 'VIDEO' || section === 'BONUS') list = list.filter((l) => l.section === section);
-  if (req.query.language) {
-    const lang = parseLang(req.query.language);
-    list = list.filter((l) => parseLang(l.language) === lang);
+  if (user.role === 'TEACHER') {
+    list = list.filter((l) => l.teacherId === user.id);
+    if (req.query.language) {
+      const lang = parseLang(req.query.language);
+      list = list.filter((l) => lessonLanguageRaw(l) === lang);
+    }
+  } else {
+    // Students: always force authenticated user language (ignore ?language=)
+    list = list.filter((l) => lessonVisibleTo(l, user));
   }
+  if (section === 'VIDEO' || section === 'BONUS') list = list.filter((l) => l.section === section);
   list = [...list].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-  res.json({ lessons: list.map((l) => publicLesson(l, { forTeacher: user.role === 'TEACHER' })) });
+  res.json({
+    language: user.role === 'STUDENT' ? getUserLanguage(user) : (req.query.language ? parseLang(req.query.language) : null),
+    lessons: list.map((l) => publicLesson(l, { forTeacher: user.role === 'TEACHER' })),
+  });
 });
 
 app.get('/api/lessons/:id', requireAuth, (req, res) => {
@@ -2218,22 +2383,39 @@ app.get('/api/lessons/:id', requireAuth, (req, res) => {
   });
 });
 
-app.get('/api/lessons/:id/file', requireAuth, (req, res) => {
-  const lesson = store().lessons.find((l) => l.id === req.params.id);
-  if (!lesson || !lessonVisibleTo(lesson, req.auth.user)) {
-    return res.status(404).json({ error: 'Файл не найден.' });
+app.get('/api/lessons/:id/file', requireAuth, async (req, res) => {
+  try {
+    const lesson = store().lessons.find((l) => l.id === req.params.id);
+    if (!lesson || !lessonVisibleTo(lesson, req.auth.user)) {
+      return res.status(404).json({ error: 'Файл не найден.' });
+    }
+    if (lesson.mediaUrl && String(lesson.mediaUrl).startsWith('http')) {
+      return res.redirect(302, lesson.mediaUrl);
+    }
+    if (lesson.fileKey && r2.r2Configured()) {
+      const obj = await r2.getObject(lesson.fileKey);
+      if (!obj) return res.status(404).json({ error: 'Файл не найден.' });
+      const inline = String(lesson.mimeType || '').includes('pdf') || String(lesson.mimeType || '').startsWith('video/');
+      res.setHeader('Content-Type', lesson.mimeType || obj.mimeType || 'application/octet-stream');
+      res.setHeader('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename="${encodeURIComponent(lesson.originalName || 'file')}"`);
+      return res.send(obj.buffer);
+    }
+    if (!lesson.filePath) return res.status(404).json({ error: 'К этому уроку файл не приложен.' });
+    const filePath = path.join(db.LESSONS_DIR, path.basename(lesson.filePath));
+    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Файл не найден на диске.' });
+    const inline = String(lesson.mimeType || '').includes('pdf') || String(lesson.mimeType || '').startsWith('video/');
+    res.setHeader('Content-Type', lesson.mimeType || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename="${encodeURIComponent(lesson.originalName || 'file')}"`);
+    return res.sendFile(filePath);
+  } catch (err) {
+    console.error('lesson file failed:', err.message);
+    return res.status(500).json({ error: 'Не удалось отдать файл.' });
   }
-  if (!lesson.filePath) return res.status(404).json({ error: 'К этому уроку файл не приложен.' });
-  const filePath = path.join(db.LESSONS_DIR, path.basename(lesson.filePath));
-  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Файл не найден на диске.' });
-  const inline = String(lesson.mimeType || '').includes('pdf') || String(lesson.mimeType || '').startsWith('video/');
-  res.setHeader('Content-Type', lesson.mimeType || 'application/octet-stream');
-  res.setHeader('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename="${encodeURIComponent(lesson.originalName || 'file')}"`);
-  res.sendFile(filePath);
 });
 
 app.post('/api/lessons', requireAuth, requireRole('TEACHER'), (req, res) => {
-  uploadLesson.single('file')(req, res, (err) => {
+  uploadLesson.single('file')(req, res, async (err) => {
+    try {
     if (err) return res.status(400).json({ error: err.message || 'Не удалось загрузить файл.' });
     const teacher = req.auth.user;
     const body = req.body || {};
@@ -2255,7 +2437,6 @@ app.post('/api/lessons', requireAuth, requireRole('TEACHER'), (req, res) => {
       const ext = path.extname(file.originalname || '').toLowerCase();
       const m = mimeBase(file.mimetype);
       if (m !== 'application/pdf' && ext !== '.pdf') {
-        try { fs.unlinkSync(file.path); } catch (_) { /* ignore */ }
         return res.status(400).json({ error: 'Для этого типа нужен PDF-файл.' });
       }
     }
@@ -2265,13 +2446,14 @@ app.post('/api/lessons', requireAuth, requireRole('TEACHER'), (req, res) => {
     const assignAll = body.assignAll === '1' || body.assignAll === 'true' || section === 'VIDEO';
     if (section === 'VIDEO' || assignAll) studentIds = [];
     else if (!studentIds.length) {
-      if (file) try { fs.unlinkSync(file.path); } catch (_) { /* ignore */ }
       return res.status(400).json({ error: 'Выберите учеников или отметьте «Всем ученикам».' });
     }
     studentIds = studentIds.filter((sid) => {
       const s = store().users.find((u) => u.id === sid);
       return teacherOwnsStudent(teacher, s) && userLang(s) === language && (!targetLevel || userLevel(s) === targetLevel);
     });
+    let stored = null;
+    if (file) stored = await persistUpload(file, 'lessons');
     const meta = LESSON_TYPE_META[type] || LESSON_TYPE_META.VIDEO;
     const lesson = {
       id: db.id('lsn'),
@@ -2287,9 +2469,11 @@ app.post('/api/lessons', requireAuth, requireRole('TEACHER'), (req, res) => {
       note: String(body.note || '').trim(),
       videoUrl,
       duration: String(body.duration || '').trim(),
-      filePath: file ? path.basename(file.path) : null,
-      mimeType: file ? mimeBase(file.mimetype) : '',
-      originalName: file ? file.originalname : '',
+      filePath: stored?.mediaPath || null,
+      fileKey: stored?.mediaKey || null,
+      mediaUrl: stored?.mediaUrl || null,
+      mimeType: stored ? mimeBase(stored.mimeType) : '',
+      originalName: stored?.originalName || '',
       studentIds,
       createdAt: iso(),
     };
@@ -2309,15 +2493,22 @@ app.post('/api/lessons', requireAuth, requireRole('TEACHER'), (req, res) => {
     });
     save();
     res.status(201).json({ lesson: publicLesson(lesson, { forTeacher: true }) });
+    } catch (e) {
+      console.error('lesson create failed:', e.message);
+      res.status(e.status || 500).json({ error: e.message || 'Не удалось создать урок.' });
+    }
   });
 });
 
-app.delete('/api/lessons/:id', requireAuth, requireRole('TEACHER'), (req, res) => {
+app.delete('/api/lessons/:id', requireAuth, requireRole('TEACHER'), async (req, res) => {
   const idx = store().lessons.findIndex((l) => l.id === req.params.id);
   if (idx < 0) return res.status(404).json({ error: 'Урок не найден.' });
   const lesson = store().lessons[idx];
   if (lesson.teacherId !== req.auth.user.id) {
     return res.status(403).json({ error: 'Нет доступа к этому уроку.' });
+  }
+  if (lesson.fileKey && r2.r2Configured()) {
+    try { await r2.deleteObject(lesson.fileKey); } catch (_) { /* ignore */ }
   }
   if (lesson.filePath) {
     const filePath = path.join(db.LESSONS_DIR, path.basename(lesson.filePath));
@@ -2351,9 +2542,21 @@ app.use((err, _req, res, _next) => {
   res.status(status).json({ error: safe });
 });
 
-app.listen(PORT, () => {
-  pruneStaleNotifications();
-  console.log(`Пересказ: http://localhost:${PORT}`);
-  console.log('Ученик — регистрация: имя и пароль');
-  console.log('Учитель — код из переменной TEACHER_LOGIN_CODE');
+async function boot() {
+  await db.loadAsync();
+  if (isProduction() && !r2.r2Configured()) {
+    console.warn('WARNING: R2 is not configured — media uploads will fail in production');
+  }
+  app.listen(PORT, '0.0.0.0', () => {
+    pruneStaleNotifications();
+    console.log(`EliteSchool API listening on 0.0.0.0:${PORT}`);
+    console.log(`DB mode: ${db.getStorageMode()}`);
+  });
+}
+
+boot().catch((err) => {
+  console.error('Startup failed:', err.message || err);
+  process.exit(1);
 });
+
+module.exports = { app };

@@ -188,12 +188,17 @@ export function assignmentStatusBadge(status) {
 export const store = {
   user: null,
   unread: 0,
-  track: 'RU',
+  track: 'ru',
 };
 
+/** Canonical language: "ru" | "en" */
 export function parseLang(value) {
-  const s = String(value || '').trim().toUpperCase();
-  return s === 'EN' || s === 'ENGLISH' ? 'EN' : 'RU';
+  const raw = String(value || '').trim();
+  const s = raw.toLowerCase();
+  if (s === 'en' || s === 'english' || s === 'eng') return 'en';
+  if (s === 'ru' || s === 'russian' || s === 'рус' || s === 'русский') return 'ru';
+  if (raw.toUpperCase() === 'EN') return 'en';
+  return 'ru';
 }
 
 export function parseLevel(value) {
@@ -204,26 +209,32 @@ export function parseLevel(value) {
 }
 
 export function trackSlug(lang) {
-  return parseLang(lang) === 'EN' ? 'en' : 'ru';
+  return parseLang(lang) === 'en' ? 'en' : 'ru';
 }
 
-export function langLabel(code, ui = 'RU') {
-  if (parseLang(code) === 'EN') return ui === 'EN' ? 'English' : 'Английский';
-  return ui === 'EN' ? 'Russian' : 'Русский';
+export function subjectSlugForUser(user = store.user) {
+  return parseLang(user?.language) === 'en' ? 'english' : 'russian';
 }
 
-export function levelLabel(code, ui = 'RU') {
+export function langLabel(code, ui = 'ru') {
+  const uiLang = parseLang(ui);
+  if (parseLang(code) === 'en') return uiLang === 'en' ? 'English' : 'Английский';
+  return uiLang === 'en' ? 'Russian' : 'Русский';
+}
+
+export function levelLabel(code, ui = 'ru') {
   const key = parseLevel(code);
+  const uiLang = parseLang(ui);
   const map = {
-    BEGINNER: { RU: 'Начальный', EN: 'Beginner' },
-    INTERMEDIATE: { RU: 'Средний', EN: 'Intermediate' },
-    ADVANCED: { RU: 'Продвинутый', EN: 'Advanced' },
+    BEGINNER: { ru: 'Начальный', en: 'Beginner' },
+    INTERMEDIATE: { ru: 'Средний', en: 'Intermediate' },
+    ADVANCED: { ru: 'Продвинутый', en: 'Advanced' },
   };
-  return ui === 'EN' ? map[key].EN : map[key].RU;
+  return uiLang === 'en' ? map[key].en : map[key].ru;
 }
 
 export function studentIsEn() {
-  return parseLang(store.user?.language) === 'EN';
+  return parseLang(store.user?.language) === 'en';
 }
 
 function st(ru, en) {
@@ -234,6 +245,13 @@ export function firstName(name) {
   return String(name || '').split(' ')[0] || 'друг';
 }
 
+/** Two-tone EliteSchool logo mark used in nav / auth / landing */
+export function brandLogo({ href } = {}) {
+  const inner = `<span class="brand-mark"></span><span class="brand-text"><span class="brand-elite">Elite</span><span class="brand-school">School</span></span>`;
+  if (href) return `<a href="${href}" class="brand">${inner}</a>`;
+  return `<div class="brand">${inner}</div>`;
+}
+
 export function sidebar(role, activeId) {
   const studentNav = [
     ['dashboard', 'home', st('Главная', 'Home')],
@@ -242,7 +260,7 @@ export function sidebar(role, activeId) {
     ['video-lessons', 'video', st('Видеоуроки', 'Video lessons')],
     ['bonus-lessons', 'gift', st('Бонусные уроки', 'Bonus lessons')],
     ['training', 'train', st('Тренировка', 'Practice')],
-    ['tests', 'book', st('Тесты', 'Tests')],
+    ['tests', 'book', st('Русские тесты', 'English tests')],
     ['progress', 'chart', st('Мой прогресс', 'My progress')],
     ['achievements', 'award', st('Достижения', 'Awards')],
     ['profile', 'user', st('Профиль', 'Profile')],
@@ -260,11 +278,11 @@ export function sidebar(role, activeId) {
     || String(activeId || '').startsWith('tests');
   const u = store.user || {};
   const person = role === 'student'
-    ? { name: u.name || 'Ученик', sub: `${langLabel(u.language)} · ${levelLabel(u.enrollmentLevel, studentIsEn() ? 'EN' : 'RU')}` }
+    ? { name: u.name || 'Ученик', sub: `${langLabel(u.language, studentIsEn() ? 'en' : 'ru')} · ${levelLabel(u.enrollmentLevel, studentIsEn() ? 'en' : 'ru')}` }
     : { name: u.name || 'Учитель', sub: u.groupName ? `Учитель · Группа «${u.groupName}»` : 'Учитель' };
   return `
   <aside class="sidebar">
-    <div class="brand"><span class="brand-mark"></span>Пересказ</div>
+    ${brandLogo()}
     ${items.map(([id, i, label]) => {
       const navKey = id.split('/')[0];
       const isActive = id === 'tests'
@@ -343,7 +361,7 @@ function moreMenuItems(role, activeId) {
   const student = [
     ['video-lessons', 'video', st('Видеоуроки', 'Video lessons')],
     ['bonus-lessons', 'gift', st('Бонусные уроки', 'Bonus lessons')],
-    ['tests', 'book', st('Тесты', 'Tests')],
+    ['tests', 'book', st('Русские тесты', 'English tests')],
     ['achievements', 'award', st('Достижения', 'Awards')],
   ];
   const teacher = [

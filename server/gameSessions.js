@@ -1,49 +1,61 @@
+/**
+ * Game session store abstraction.
+ * v1: in-memory Map (single Render instance).
+ * Swap implementation later for Redis without changing callers.
+ */
 const crypto = require('crypto');
 
-/** In-memory game sessions: sessionId -> payload */
-const sessions = new Map();
-const TTL_MS = 2 * 60 * 60 * 1000;
+class MemoryGameSessionStore {
+  constructor(ttlMs = 2 * 60 * 60 * 1000) {
+    this.sessions = new Map();
+    this.ttlMs = ttlMs;
+  }
 
-function prune() {
-  const now = Date.now();
-  for (const [id, s] of sessions.entries()) {
-    if (s.expiresAt <= now) sessions.delete(id);
+  prune() {
+    const now = Date.now();
+    for (const [id, s] of this.sessions.entries()) {
+      if (s.expiresAt <= now) this.sessions.delete(id);
+    }
+  }
+
+  createSession(userId, type, secret, publicPayload) {
+    this.prune();
+    const id = `gs-${crypto.randomUUID()}`;
+    this.sessions.set(id, {
+      id,
+      userId,
+      type,
+      secret,
+      createdAt: Date.now(),
+      expiresAt: Date.now() + this.ttlMs,
+    });
+    return { sessionId: id, ...publicPayload };
+  }
+
+  getSession(sessionId, userId, type) {
+    this.prune();
+    const s = this.sessions.get(String(sessionId || ''));
+    if (!s) return null;
+    if (s.userId !== userId) return null;
+    if (type && s.type !== type) return null;
+    if (s.expiresAt <= Date.now()) {
+      this.sessions.delete(s.id);
+      return null;
+    }
+    return s;
+  }
+
+  destroySession(sessionId) {
+    this.sessions.delete(String(sessionId || ''));
   }
 }
 
-function createSession(userId, type, secret, publicPayload) {
-  prune();
-  const id = `gs-${crypto.randomUUID()}`;
-  sessions.set(id, {
-    id,
-    userId,
-    type,
-    secret,
-    createdAt: Date.now(),
-    expiresAt: Date.now() + TTL_MS,
-  });
-  return { sessionId: id, ...publicPayload };
-}
-
-function getSession(sessionId, userId, type) {
-  prune();
-  const s = sessions.get(String(sessionId || ''));
-  if (!s) return null;
-  if (s.userId !== userId) return null;
-  if (type && s.type !== type) return null;
-  if (s.expiresAt <= Date.now()) {
-    sessions.delete(s.id);
-    return null;
-  }
-  return s;
-}
-
-function destroySession(sessionId) {
-  sessions.delete(String(sessionId || ''));
-}
+const defaultStore = new MemoryGameSessionStore();
 
 module.exports = {
-  createSession,
-  getSession,
-  destroySession,
+  MemoryGameSessionStore,
+  createSession: (...args) => defaultStore.createSession(...args),
+  getSession: (...args) => defaultStore.getSession(...args),
+  destroySession: (...args) => defaultStore.destroySession(...args),
+  store: defaultStore,
 };

@@ -7,6 +7,7 @@
     "description": "Grammar, vocabulary, reading and mixed practice quizzes.",
     "icon": "book",
     "color": "violet",
+    "language": "en",
     "uiLocale": "en",
     "order": 1,
     "isActive": true
@@ -19,6 +20,7 @@
     "description": "Орфография, грамматика, пунктуация и лексика.",
     "icon": "book",
     "color": "violet",
+    "language": "ru",
     "uiLocale": "ru",
     "order": 2,
     "isActive": true

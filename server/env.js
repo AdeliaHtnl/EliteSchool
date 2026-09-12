@@ -31,13 +31,43 @@ function teacherLoginCode() {
   if (isProduction()) {
     throw new Error('TEACHER_LOGIN_CODE is required in production');
   }
-  // Local-only fallback so `npm start` works before .env is created.
-  // Never use this value in production (blocked above).
   return 'local-dev-teacher';
+}
+
+function frontendOrigins() {
+  const raw = String(process.env.FRONTEND_URL || '').trim();
+  const list = raw
+    ? raw.split(',').map((s) => s.trim()).filter(Boolean)
+    : [];
+  if (!isProduction()) {
+    list.push('http://localhost:3000', 'http://127.0.0.1:3000', 'http://localhost:5173');
+  }
+  return [...new Set(list)];
+}
+
+function sessionCookieOptions() {
+  const crossSite = isProduction() && Boolean(String(process.env.FRONTEND_URL || '').trim());
+  return {
+    httpOnly: true,
+    path: '/',
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+    secure: isProduction() || crossSite,
+    sameSite: crossSite ? 'none' : 'lax',
+  };
+}
+
+function sessionSecret() {
+  const s = String(process.env.SESSION_SECRET || '').trim();
+  if (s) return s;
+  if (isProduction()) throw new Error('SESSION_SECRET is required in production');
+  return 'local-dev-session-secret';
 }
 
 module.exports = {
   loadDotEnv,
   isProduction,
   teacherLoginCode,
+  frontendOrigins,
+  sessionCookieOptions,
+  sessionSecret,
 };

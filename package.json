@@ -1,17 +1,26 @@
 {
-  "name": "pereskaz",
+  "name": "eliteschool",
   "version": "1.0.0",
   "private": true,
-  "description": "EdTech platform for reading, retelling and teacher assessment",
+  "description": "EliteSchool — EdTech platform for reading, retelling and teacher assessment",
   "scripts": {
     "start": "node server/index.js",
     "dev": "node server/index.js",
+    "test": "node server/security-smoke.js",
     "test:security": "node server/security-smoke.js",
-    "test:smoke": "node server/smoke.js"
+    "test:smoke": "node server/smoke.js",
+    "db:migrate": "node scripts/db-migrate.js",
+    "db:seed": "node scripts/db-seed.js",
+    "db:migrate-json": "node scripts/migrate-json-to-pg.js"
+  },
+  "engines": {
+    "node": ">=18"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.758.0",
     "cookie-parser": "^1.4.7",
     "express": "^4.21.2",
-    "multer": "^2.3.0"
+    "multer": "^2.3.0",
+    "pg": "^8.14.1"
   }
 }

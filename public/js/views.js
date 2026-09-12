@@ -2,7 +2,7 @@ import {
   ic, esc, displayTitle, ring, orb, initials, formatTime, formatDate, formatDay, relativeDate, minutesLabel,
   modeLabel, studentStatusBadge, assignmentStatusBadge, appPage, emptyState,
   CRITERIA_META, achievementsFromStats, firstName, store,
-  parseLang, parseLevel, trackSlug, langLabel, levelLabel, studentIsEn,
+  parseLang, parseLevel, trackSlug, langLabel, levelLabel, studentIsEn, subjectSlugForUser, brandLogo,
 } from './ui.js';
 import { mediaUrl, lessonFileUrl } from './api.js';
 
@@ -44,7 +44,7 @@ function teacherPage(lang, title, greet, bodyHtml) {
   return appPage('teacher', `teacher-track/${slug}`, title, greet, bodyHtml);
 }
 
-function levelOptions(ui = 'RU', selected = 'BEGINNER') {
+function levelOptions(ui = 'ru', selected = 'BEGINNER') {
   return ['BEGINNER', 'INTERMEDIATE', 'ADVANCED'].map((key) => (
     `<label><input type="radio" name="enrollmentLevel" value="${key}" ${key === selected ? 'checked' : ''} required> ${esc(levelLabel(key, ui))}</label>`
   )).join('');
@@ -56,7 +56,7 @@ export function viewLanding(stats = {}) {
   const retellings = Number(stats.retellings) || 0;
   return `
   <nav class="landing-nav"><div class="container landing-nav-inner">
-    <div class="brand"><span class="brand-mark"></span>Пересказ</div>
+    ${brandLogo()}
     <div class="landing-auth-row">
       <span class="landing-auth-label">Регистрация:</span>
       <a href="#track/ru" class="btn btn-ghost btn-sm">Русский</a>
@@ -96,19 +96,19 @@ export function viewLanding(stats = {}) {
     </div>
   </div>
   <div class="container landing-footer">
-    <span>© 2026 Пересказ — платформа развития речи</span>
+    <span>© 2026 EliteSchool — платформа развития речи</span>
     <span>Сделано для учеников и учителей</span>
   </div>`;
 }
 
 export function viewTrackLanding(lang) {
-  const isEn = parseLang(lang) === 'EN';
+  const isEn = parseLang(lang) === 'en';
   const slug = trackSlug(lang);
   if (isEn) {
     return `
     <nav class="landing-nav"><div class="container landing-nav-inner">
-      <a href="#landing" class="brand"><span class="brand-mark"></span>Пересказ</a>
-      <a href="#track/ru" class="btn btn-ghost btn-sm">Русский раздел</a>
+      ${brandLogo({ href: '#landing' })}
+      <a href="#track/ru" class="btn btn-ghost btn-sm">← Русский раздел</a>
     </div></nav>
     <div class="container hero" style="grid-template-columns:1fr;">
       <div>
@@ -124,8 +124,8 @@ export function viewTrackLanding(lang) {
   }
   return `
   <nav class="landing-nav"><div class="container landing-nav-inner">
-    <a href="#landing" class="brand"><span class="brand-mark"></span>Пересказ</a>
-    <a href="#track/en" class="btn btn-ghost btn-sm">English section</a>
+    ${brandLogo({ href: '#landing' })}
+    <a href="#track/en" class="btn btn-ghost btn-sm">English section →</a>
   </div></nav>
   <div class="container hero" style="grid-template-columns:1fr;">
     <div>
@@ -141,13 +141,13 @@ export function viewTrackLanding(lang) {
 }
 
 export function viewStudentLogin(lang) {
-  const isEn = parseLang(lang) === 'EN';
+  const isEn = parseLang(lang) === 'en';
   const slug = trackSlug(lang);
   if (isEn) {
     return `
     <div class="auth-shell">
       <div class="auth-side">
-        <div class="brand" style="color:#fff;"><span class="brand-mark"></span>Пересказ</div>
+        ${brandLogo()}
         <div class="auth-quote">English section. Read, prepare and record your retelling.<span>Student log in</span></div>
         ${orb('sm')}
       </div>
@@ -170,7 +170,7 @@ export function viewStudentLogin(lang) {
   return `
   <div class="auth-shell">
     <div class="auth-side">
-      <div class="brand" style="color:#fff;"><span class="brand-mark"></span>Пересказ</div>
+      ${brandLogo()}
       <div class="auth-quote">Русский раздел. Читай, готовься и записывай пересказ.<span>Вход ученика</span></div>
       ${orb('sm')}
     </div>
@@ -192,14 +192,14 @@ export function viewStudentLogin(lang) {
 }
 
 export function viewStudentRegister(lang) {
-  const isEn = parseLang(lang) === 'EN';
+  const isEn = parseLang(lang) === 'en';
   const slug = trackSlug(lang);
-  const ui = isEn ? 'EN' : 'RU';
+  const ui = isEn ? 'en' : 'ru';
   if (isEn) {
     return `
     <div class="auth-shell">
       <div class="auth-side">
-        <div class="brand" style="color:#fff;"><span class="brand-mark"></span>Пересказ</div>
+        ${brandLogo()}
         <div class="auth-quote">Join the English section and choose your level. The teacher will send matching texts and videos.<span>Student registration</span></div>
         ${orb('sm')}
       </div>
@@ -209,10 +209,10 @@ export function viewStudentRegister(lang) {
           <p class="sub">You are registering for the English section. Pick your level so the teacher does not mix beginner and intermediate work.</p>
           <form data-form="student-register">
             <div class="form-error" data-error hidden></div>
-            <input type="hidden" name="language" value="EN">
+            <input type="hidden" name="language" value="en">
             <div class="field"><label>Full name</label><input name="name" type="text" autocomplete="name" placeholder="How should we call you" required minlength="2" maxlength="80"></div>
             <div class="field"><label>Your level</label>
-              <div class="chip-select">${levelOptions('EN')}</div>
+              <div class="chip-select">${levelOptions('en')}</div>
             </div>
             <div class="field"><label>Password</label><input name="password" type="password" autocomplete="new-password" placeholder="At least 6 characters" required minlength="6"></div>
             <div class="field"><label>Repeat password</label><input name="passwordConfirm" type="password" autocomplete="new-password" placeholder="Password again" required minlength="6"></div>
@@ -226,7 +226,7 @@ export function viewStudentRegister(lang) {
   return `
   <div class="auth-shell">
     <div class="auth-side">
-      <div class="brand" style="color:#fff;"><span class="brand-mark"></span>Пересказ</div>
+      ${brandLogo()}
       <div class="auth-quote">Русский раздел. Укажи уровень — учитель пришлёт подходящие тексты и видеоуроки.<span>Регистрация ученика</span></div>
       ${orb('sm')}
     </div>
@@ -236,10 +236,10 @@ export function viewStudentRegister(lang) {
         <p class="sub">Ты в русском разделе. Выбери уровень, чтобы не получать задания другого класса.</p>
         <form data-form="student-register">
           <div class="form-error" data-error hidden></div>
-          <input type="hidden" name="language" value="RU">
+          <input type="hidden" name="language" value="ru">
           <div class="field"><label>Имя и фамилия</label><input name="name" type="text" autocomplete="name" placeholder="Как к тебе обращаться" required minlength="2" maxlength="80"></div>
           <div class="field"><label>Твой уровень</label>
-            <div class="chip-select">${levelOptions('RU')}</div>
+            <div class="chip-select">${levelOptions('ru')}</div>
           </div>
           <div class="field"><label>Пароль</label><input name="password" type="password" autocomplete="new-password" placeholder="Не меньше 6 символов" required minlength="6"></div>
           <div class="field"><label>Повтори пароль</label><input name="passwordConfirm" type="password" autocomplete="new-password" placeholder="Ещё раз пароль" required minlength="6"></div>
@@ -255,7 +255,7 @@ export function viewTeacherLogin() {
   return `
   <div class="auth-shell">
     <div class="auth-side">
-      <div class="brand" style="color:#fff;"><span class="brand-mark"></span>Пересказ</div>
+      ${brandLogo()}
       <div class="auth-quote">Проверка пересказов, результаты тестов и материалы для класса.<span>Панель учителя</span></div>
       ${orb('sm')}
     </div>
@@ -345,18 +345,22 @@ export function viewStudentDashboard(data) {
 
 function literacyDashCard(lit) {
   const has = lit && lit.attempts > 0;
+  const en = studentIsEn();
+  const testsHref = `#tests/${subjectSlugForUser()}`;
   return `
     <div class="card card-lg" style="margin-top:18px;">
       <div class="row-between" style="gap:16px; flex-wrap:wrap;">
         <div>
-          <p class="section-title">Тесты</p>
+          <p class="section-title">${en ? 'Tests' : 'Тесты'}</p>
           <p class="section-sub" style="margin-bottom:0;">${has
-            ? `Последний результат: ${lit.lastPercent}% · ${esc(lit.lastLevel)} · ${esc(lit.lastLevelTitle || '')}`
-            : 'English и Русский — отдельные предметы и тесты.'}</p>
+            ? (en
+              ? `Last result: ${lit.lastPercent}% · ${esc(lit.lastLevel)} · ${esc(lit.lastLevelTitle || '')}`
+              : `Последний результат: ${lit.lastPercent}% · ${esc(lit.lastLevel)} · ${esc(lit.lastLevelTitle || '')}`)
+            : (en ? 'Quizzes for your English track only.' : 'Тесты только вашего русского раздела.')}</p>
         </div>
         <div style="display:flex; gap:10px; flex-wrap:wrap;">
-          ${has ? `<a href="#tests-history" class="btn btn-ghost btn-sm">История</a>` : ''}
-          <a href="#tests" class="btn btn-primary btn-sm">${has ? 'Открыть' : 'Начать'}</a>
+          ${has ? `<a href="#tests-history" class="btn btn-ghost btn-sm">${en ? 'History' : 'История'}</a>` : ''}
+          <a href="${testsHref}" class="btn btn-primary btn-sm">${has ? (en ? 'Open' : 'Открыть') : (en ? 'Start' : 'Начать')}</a>
         </div>
       </div>
     </div>`;
@@ -575,7 +579,7 @@ export function viewAchievements(stats) {
 
 export function viewProfile(stats) {
   const u = store.user || {};
-  const ui = studentIsEn() ? 'EN' : 'RU';
+  const ui = studentIsEn() ? 'en' : 'ru';
   const body = `
     <div class="grid-2">
       <div class="card card-lg">
@@ -583,28 +587,33 @@ export function viewProfile(stats) {
           <div class="avatar" style="width:64px;height:64px;font-size:20px;">${esc(initials(u.name))}</div>
           <div>
             <p class="section-title" style="margin-bottom:2px;">${esc(u.name)}</p>
-            <p class="section-sub" style="margin:0;">${esc(langLabel(u.language, ui))} · ${esc(levelLabel(u.enrollmentLevel, ui))}</p>
+            <p class="section-sub" style="margin:0;">${esc(levelLabel(u.enrollmentLevel, ui))}</p>
           </div>
         </div>
-        <div class="grid-3" style="gap:12px;">
-          <div class="card" style="padding:16px; text-align:center;"><b style="font-family:'Unbounded'; font-size:20px;">${stats.completedCount || 0}</b><div class="section-sub" style="margin:0;">проверено</div></div>
-          <div class="card" style="padding:16px; text-align:center;"><b style="font-family:'Unbounded'; font-size:20px;">${stats.submittedCount || 0}</b><div class="section-sub" style="margin:0;">отправлено</div></div>
-          <div class="card" style="padding:16px; text-align:center;"><b style="font-family:'Unbounded'; font-size:20px;">${stats.avgScore ?? '—'}</b><div class="section-sub" style="margin:0;">ср. оценка</div></div>
+        <div class="field" style="margin-bottom:18px;">
+          <label>${ui === 'en' ? 'Language' : 'Язык'}</label>
+          <p class="section-title" style="margin:6px 0 0;">${esc(langLabel(u.language, ui))}</p>
+          <p class="hint" style="margin:6px 0 0;">${ui === 'en' ? 'Language is set at registration and cannot be changed here.' : 'Язык задаётся при регистрации и здесь не меняется.'}</p>
         </div>
-        <p class="section-title" style="margin-top:26px;">Навыки</p>
-        ${stats.completedCount ? skillRows(stats.criteria) : '<p class="section-sub">Оценки появятся после проверки.</p>'}
+        <div class="grid-3" style="gap:12px;">
+          <div class="card" style="padding:16px; text-align:center;"><b style="font-family:'Unbounded'; font-size:20px;">${stats.completedCount || 0}</b><div class="section-sub" style="margin:0;">${ui === 'en' ? 'reviewed' : 'проверено'}</div></div>
+          <div class="card" style="padding:16px; text-align:center;"><b style="font-family:'Unbounded'; font-size:20px;">${stats.submittedCount || 0}</b><div class="section-sub" style="margin:0;">${ui === 'en' ? 'submitted' : 'отправлено'}</div></div>
+          <div class="card" style="padding:16px; text-align:center;"><b style="font-family:'Unbounded'; font-size:20px;">${stats.avgScore ?? '—'}</b><div class="section-sub" style="margin:0;">${ui === 'en' ? 'avg score' : 'ср. оценка'}</div></div>
+        </div>
+        <p class="section-title" style="margin-top:26px;">${ui === 'en' ? 'Skills' : 'Навыки'}</p>
+        ${stats.completedCount ? skillRows(stats.criteria) : `<p class="section-sub">${ui === 'en' ? 'Scores appear after teacher review.' : 'Оценки появятся после проверки.'}</p>`}
       </div>
       <div class="card card-lg">
-        <p class="section-title">Последние результаты</p>
+        <p class="section-title">${ui === 'en' ? 'Recent results' : 'Последние результаты'}</p>
         ${(stats.history || []).slice().reverse().slice(0, 6).map((h) => `<div class="task-row">
           <div class="task-ic">${ic('mic', 16)}</div>
           <div style="flex:1;"><p class="t-title">${esc(h.title)}</p><p class="t-meta">${esc(formatDate(h.reviewedAt || h.submittedAt))}</p></div>
           <a href="#retell-result/${esc(h.retellingId)}" class="badge badge-green">${h.score}/100</a>
-        </div>`).join('') || emptyState('Пока пусто', 'Здесь появятся проверенные пересказы.')}
+        </div>`).join('') || emptyState(ui === 'en' ? 'Empty for now' : 'Пока пусто', ui === 'en' ? 'Reviewed retellings will appear here.' : 'Здесь появятся проверенные пересказы.')}
       </div>
     </div>
   `;
-  return appPage('student', 'profile', 'Профиль', null, body);
+  return appPage('student', 'profile', ui === 'en' ? 'Profile' : 'Профиль', null, body);
 }
 
 function youtubeEmbed(url) {
@@ -747,9 +756,17 @@ export function viewBonusLessonDetail(payload) {
 }
 
 export function viewTraining() {
-  const items = [
+  const en = studentIsEn();
+  const items = en ? [
+    ['puzzle', 'Games', 'Main idea, story order, cloze and sprint', '#games'],
+    ['book', 'English tests', 'Quizzes for your English track', `#tests/${subjectSlugForUser()}`],
+    ['mic', 'Retellings', 'Assignments from your teacher', '#retell-list'],
+    ['video', 'Video lessons', 'Materials from your teacher', '#video-lessons'],
+    ['gift', 'Bonus lessons', 'Video, PDF and computer lessons', '#bonus-lessons'],
+    ['chart', 'My progress', 'Scores from reviewed retellings', '#progress'],
+  ] : [
     ['puzzle', 'Игры', 'Главная мысль, порядок событий, слова и спринт грамотности', '#games'],
-    ['book', 'Тесты', 'English и Русский — отдельные предметы и квизы', '#tests'],
+    ['book', 'Русские тесты', 'Тесты только вашего русского раздела', `#tests/${subjectSlugForUser()}`],
     ['mic', 'Пересказы', 'Задания, которые назначил учитель', '#retell-list'],
     ['video', 'Видеоуроки', 'Материалы, которые добавил учитель', '#video-lessons'],
     ['gift', 'Бонусные уроки', 'Видео, PDF и уроки про компьютер', '#bonus-lessons'],
@@ -761,15 +778,15 @@ export function viewTraining() {
       <p class="section-title" style="margin-bottom:2px;">${t}</p>
       <p class="section-sub" style="margin:0;">${c}</p>
     </a>`).join('')}</div>`;
-  return appPage('student', 'training', 'Тренировка', 'Здесь только рабочие разделы платформы.', body);
+  return appPage('student', 'training', en ? 'Practice' : 'Тренировка', en ? 'Working sections of the platform.' : 'Здесь только рабочие разделы платформы.', body);
 }
 
 export function viewTeacherDashboard(data) {
   const t = data.totals || {};
   const pending = data.pending || [];
   const tracks = data.tracks || {};
-  const ru = tracks.RU || {};
-  const en = tracks.EN || {};
+  const ru = tracks.ru || tracks.RU || {};
+  const en = tracks.en || tracks.EN || {};
   const activity = data.activity || [0, 0, 0, 0, 0, 0, 0];
   const maxA = Math.max(1, ...activity);
   const days = activity.map((_, i) => {
@@ -824,7 +841,7 @@ export function viewTeacherDashboard(data) {
 }
 
 export function viewTeacherTrack(lang, data = {}) {
-  const isEn = parseLang(lang) === 'EN';
+  const isEn = parseLang(lang) === 'en';
   const slug = trackSlug(lang);
   const code = parseLang(lang);
   const track = (data.tracks && data.tracks[code]) || {};
@@ -919,7 +936,7 @@ export function viewTeacherStudentDetail(payload) {
       <div class="card card-lg">
         <div style="display:flex; align-items:center; gap:16px; margin-bottom:18px;">
           <div class="avatar" style="width:56px;height:56px;font-size:17px;">${esc(initials(s.name))}</div>
-          <div><p class="section-title" style="margin-bottom:2px;">${esc(s.name)}</p><p class="section-sub" style="margin:0;">${s.completedCount ? esc(s.level) : 'Ученик'}</p></div>
+          <div><p class="section-title" style="margin-bottom:2px;">${esc(s.name)}</p><p class="section-sub" style="margin:0;">Language: ${esc(langLabel(s.language))} · ${s.completedCount ? esc(s.level) : 'Ученик'}</p></div>
         </div>
         ${s.completedCount ? skillRows(s.criteria) : '<p class="section-sub">Оценки появятся после проверки пересказов.</p>'}
       </div>
@@ -988,10 +1005,10 @@ export function viewTeacherAssignments(list) {
   return appPage('teacher', 'teacher-assignments', 'Задания', null, body);
 }
 
-export function viewTeacherCreate(students, lang = 'RU') {
+export function viewTeacherCreate(students, lang = 'ru') {
   const code = parseLang(lang);
   const slug = trackSlug(code);
-  const isEn = code === 'EN';
+  const isEn = code === 'en';
   const list = (students || []).filter((s) => parseLang(s.language) === code);
   const body = `
     <a href="#teacher-track/${slug}" class="btn btn-ghost btn-sm" style="margin-bottom:18px;">${ic('arrowL', 14)} ${isEn ? 'Back to English section' : 'К русскому разделу'}</a>
@@ -1027,7 +1044,7 @@ export function viewTeacherCreate(students, lang = 'RU') {
               <label><input type="checkbox" data-assign-all checked> ${isEn ? 'All matching students' : 'Всем подходящим ученикам'}</label>
             </div>
             <div class="chip-select" data-student-chips style="margin-top:10px;">
-              ${list.length ? list.map((s) => `<label><input type="checkbox" name="studentIds" value="${esc(s.id)}" checked> ${esc(s.name)} · ${esc(levelLabel(s.enrollmentLevel, isEn ? 'EN' : 'RU'))}</label>`).join('') : `<p class="section-sub">${isEn ? 'No students in English yet.' : 'Пока нет учеников в этом разделе.'}</p>`}
+              ${list.length ? list.map((s) => `<label><input type="checkbox" name="studentIds" value="${esc(s.id)}" checked> ${esc(s.name)} · ${esc(levelLabel(s.enrollmentLevel, isEn ? 'en' : 'ru'))}</label>`).join('') : `<p class="section-sub">${isEn ? 'No students in English yet.' : 'Пока нет учеников в этом разделе.'}</p>`}
             </div>
           </div>
         </div>
@@ -1191,10 +1208,10 @@ export function viewTeacherVideoLessons(lessons) {
   return appPage('teacher', 'teacher-video-lessons', 'Видеоуроки', null, body);
 }
 
-export function viewTeacherVideoCreate(lang = 'RU') {
+export function viewTeacherVideoCreate(lang = 'ru') {
   const code = parseLang(lang);
   const slug = trackSlug(code);
-  const isEn = code === 'EN';
+  const isEn = code === 'en';
   const body = `
     <a href="#teacher-track/${slug}" class="btn btn-ghost btn-sm" style="margin-bottom:18px;">${ic('arrowL', 14)} ${isEn ? 'Back to English section' : 'К разделу'}</a>
     <div class="card card-lg" style="max-width:760px;">
@@ -1277,10 +1294,10 @@ export function viewTeacherBonus(lessons) {
   return appPage('teacher', 'teacher-bonus', 'Бонусные уроки', null, body);
 }
 
-export function viewTeacherBonusCreate(students, lang = 'RU') {
+export function viewTeacherBonusCreate(students, lang = 'ru') {
   const code = parseLang(lang);
   const slug = trackSlug(code);
-  const isEn = code === 'EN';
+  const isEn = code === 'en';
   const list = (students || []).filter((s) => parseLang(s.language) === code);
   const body = `
     <a href="#teacher-track/${slug}" class="btn btn-ghost btn-sm" style="margin-bottom:18px;">${ic('arrowL', 14)} ${isEn ? 'Back to English section' : 'К разделу'}</a>
@@ -1316,7 +1333,7 @@ export function viewTeacherBonusCreate(students, lang = 'RU') {
               <label><input type="checkbox" name="assignAll" value="1" data-assign-all checked> ${isEn ? 'All matching students' : 'Всем подходящим'}</label>
             </div>
             <div class="chip-select" style="margin-top:10px;">
-              ${list.map((s) => `<label><input type="checkbox" name="studentIds" value="${esc(s.id)}" checked> ${esc(s.name)} · ${esc(levelLabel(s.enrollmentLevel, isEn ? 'EN' : 'RU'))}</label>`).join('') || `<p class="section-sub">${isEn ? 'No students yet.' : 'Пока нет учеников.'}</p>`}
+              ${list.map((s) => `<label><input type="checkbox" name="studentIds" value="${esc(s.id)}" checked> ${esc(s.name)} · ${esc(levelLabel(s.enrollmentLevel, isEn ? 'en' : 'ru'))}</label>`).join('') || `<p class="section-sub">${isEn ? 'No students yet.' : 'Пока нет учеников.'}</p>`}
             </div>
           </div>
         </div>
@@ -1390,7 +1407,7 @@ export function viewLiteracyIntro(meta, stats, current) {
   const hasHistory = stats && stats.attempts > 0;
   const body = testsWrap(`
   <div class="test-shell">
-    <a href="#tests/russian" class="btn btn-ghost btn-sm" style="margin-bottom:14px;">${ic('arrowL', 14)} К русским тестам</a>
+    <a href="#tests/${subjectSlugForUser()}" class="btn btn-ghost btn-sm" style="margin-bottom:14px;">${ic('arrowL', 14)} ${studentIsEn() ? 'Back to tests' : 'К тестам'}</a>
     <div class="stage-card" style="text-align:center; padding:48px 32px;">
       ${orb('sm')}
       <h2 style="margin-top:18px;">Тест на грамотность</h2>
@@ -1557,7 +1574,7 @@ export function viewLiteracyLearn(topic) {
   const t = topic || {};
   const body = testsWrap(`
   <div class="test-shell">
-    <a href="#tests/russian" class="btn btn-ghost btn-sm" style="margin-bottom:14px;">${ic('arrowL', 14)} К тестам</a>
+    <a href="#tests/${subjectSlugForUser()}" class="btn btn-ghost btn-sm" style="margin-bottom:14px;">${ic('arrowL', 14)} ${studentIsEn() ? 'Back to tests' : 'К тестам'}</a>
     <div class="stage-card">
       <span class="badge badge-green" style="margin-bottom:12px;">${esc(t.category || 'Грамотность')}</span>
       <h2 style="margin-top:0;">${esc(t.title || 'Материал')}</h2>
@@ -1565,7 +1582,7 @@ export function viewLiteracyLearn(topic) {
       ${(t.rules || []).length ? `<p class="section-title">Правила</p><ul class="rules-list">${t.rules.map((rule, i) => `<li><span class="n">${i + 1}</span>${esc(rule)}</li>`).join('')}</ul>` : ''}
       ${(t.examples || []).length ? `<div class="fb-box fb-good" style="margin-top:18px;"><h4>Примеры</h4><ul>${t.examples.map((ex) => `<li>${esc(ex)}</li>`).join('')}</ul></div>` : ''}
       <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:22px;">
-        <a href="#tests/russian" class="btn btn-primary">К русским тестам</a>
+        <a href="#tests/${subjectSlugForUser()}" class="btn btn-primary">${studentIsEn() ? 'Back to tests' : 'К тестам'}</a>
         <a href="#tests-history" class="btn btn-ghost">История</a>
       </div>
     </div>
@@ -1574,11 +1591,12 @@ export function viewLiteracyLearn(topic) {
 }
 
 export function viewTestsHub(subjects) {
+  // Kept for teacher/public edge cases; students are redirected away from #tests hub.
   const list = subjects || [];
   const body = testsWrap(`
     <div class="stage-card" style="text-align:center; padding:40px 28px;">
       <h2 style="margin:0 0 8px;">Тесты</h2>
-      <p class="hint" style="max-width:460px; margin:0 auto 22px;">Выберите предмет. English и Русский — независимые банки вопросов.</p>
+      <p class="hint" style="max-width:460px; margin:0 auto 22px;">Выберите предмет.</p>
       <div class="subject-pick">
         ${list.map((s) => `
           <a href="#tests/${esc(s.slug)}" class="subject-card">
@@ -1589,15 +1607,14 @@ export function viewTestsHub(subjects) {
       </div>
     </div>
   `);
-  return appPage('student', 'tests', 'Тесты', 'English и Русский.', body);
+  return appPage('student', 'tests', 'Тесты', null, body);
 }
 
 export function viewTestsSubject(subject, stats) {
   const s = subject || {};
-  const en = s.uiLocale === 'en';
+  const en = s.uiLocale === 'en' || parseLang(s.language) === 'en' || studentIsEn();
   const quizzes = s.quizzes || [];
   const body = testsWrap(`
-    <a href="#tests" class="btn btn-ghost btn-sm" style="margin-bottom:14px;">${ic('arrowL', 14)} ${en ? 'All subjects' : 'Все предметы'}</a>
     <div class="stage-card" style="margin-bottom:16px;">
       <h2 style="margin:0 0 6px;">${esc(s.name)}</h2>
       <p class="hint" style="margin:0;">${esc(s.description || '')}</p>
@@ -1619,7 +1636,7 @@ export function viewTestsSubject(subject, stats) {
       }).join('') || emptyState(en ? 'No quizzes yet' : 'Пока нет тестов', '')}
     </div>
   `);
-  return appPage('student', 'tests', s.name || (en ? 'Subject' : 'Предмет'), null, body);
+  return appPage('student', 'tests', s.name || (en ? 'Tests' : 'Тесты'), null, body);
 }
 
 export function viewTeacherLiteracy(students, filter) {
@@ -1943,7 +1960,7 @@ export function viewGameSprint(session) {
         <p class="section-title">${pct >= 75 ? 'Сильная разминка' : pct >= 50 ? 'Есть прогресс' : 'Стоит повторить правила'}</p>
         <p class="section-sub">Это не заменяет полный тест из 20 вопросов — только короткая тренировка.</p>
         <a href="#game-sprint" class="btn btn-primary btn-block">Ещё раз</a>
-        <a href="#tests/russian" class="btn btn-ghost btn-block" style="margin-top:8px;">Полный тест</a>
+        <a href="#tests/${subjectSlugForUser()}" class="btn btn-ghost btn-block" style="margin-top:8px;">${studentIsEn() ? 'Full quiz' : 'Полный тест'}</a>
         <a href="#games" class="btn btn-ghost btn-block" style="margin-top:8px;">К играм</a>
       </div>
     `;

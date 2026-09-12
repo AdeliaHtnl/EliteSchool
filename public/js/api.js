@@ -1,3 +1,5 @@
+import { apiUrl } from './config.js';
+
 export function friendlyError(err) {
   const status = err && err.status;
   const m = String((err && err.message) || err || '');
@@ -21,7 +23,7 @@ export async function api(path, options = {}) {
   opts.headers = headers;
   let res;
   try {
-    res = await fetch(path, opts);
+    res = await fetch(apiUrl(path), opts);
   } catch (_) {
     const err = new Error(friendlyError({ status: 0, message: 'Failed to fetch' }));
     err.status = 0;
@@ -40,9 +42,9 @@ export async function api(path, options = {}) {
 }
 
 export function mediaUrl(retellingId) {
-  return `/api/retellings/${encodeURIComponent(retellingId)}/media`;
+  return apiUrl(`/api/retellings/${encodeURIComponent(retellingId)}/media`);
 }
 
 export function lessonFileUrl(id) {
-  return `/api/lessons/${encodeURIComponent(id)}/file`;
+  return apiUrl(`/api/lessons/${encodeURIComponent(id)}/file`);
 }

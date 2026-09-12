@@ -1,5 +1,5 @@
 import { api, friendlyError } from './api.js';
-import { store, ic, formatTime, ring, skeletonPage, errorState, esc, parseLang, trackSlug } from './ui.js';
+import { store, ic, formatTime, ring, skeletonPage, errorState, esc, parseLang, trackSlug, subjectSlugForUser } from './ui.js';
 import * as views from './views.js';
 
 const root = document.getElementById('root');
@@ -24,8 +24,56 @@ const TEACHER_ROUTES = new Set([
 const PUBLIC_ROUTES = new Set(['landing', 'track', 'student-login', 'student-register', 'teacher-login', '']);
 
 function routeLang(id) {
-  if (!id) return store.track || 'RU';
+  if (!id) return store.track || 'ru';
   return parseLang(id);
+}
+
+function studentSubjectSlug() {
+  return subjectSlugForUser(store.user);
+}
+
+/** Central language route guard for students. Returns true if a redirect was issued. */
+function ensureLanguageAccess(requiredLanguage) {
+  if (!store.user || store.user.role !== 'STUDENT') return false;
+  const userLanguage = parseLang(store.user.language);
+  if (!userLanguage) {
+    nav('student-login');
+    return true;
+  }
+  if (requiredLanguage && userLanguage !== requiredLanguage) {
+    nav(`tests/${studentSubjectSlug()}`);
+    return true;
+  }
+  return false;
+}
+
+function languageForTestsSlug(slug) {
+  const s = String(slug || '').toLowerCase();
+  if (s === 'english' || s === 'en') return 'en';
+  if (s === 'russian' || s === 'ru') return 'ru';
+  return null;
+}
+
+function clearClientSession() {
+  store.user = null;
+  store.unread = 0;
+  store.track = 'ru';
+  studentsCache = [];
+  studentFilter = 'all';
+  literacyQuiz = null;
+  literacyTeacherCache = [];
+  literacyFilter = { level: 'all', result: 'all', date: 'all' };
+  literacyBusy = false;
+  gameIdea = null;
+  gameCloze = null;
+  gameMemory = null;
+  gameSprint = null;
+  if (activeTimer) {
+    clearInterval(activeTimer);
+    activeTimer = null;
+  }
+  recorder = null;
+  recordKind = 'AUDIO';
 }
 
 let renderToken = 0;
@@ -87,9 +135,10 @@ async function refreshMe() {
   try {
     const data = await api('/api/me');
     store.user = data.user;
+    if (data.user?.role === 'STUDENT') store.track = parseLang(data.user.language) || 'ru';
     return data.user;
   } catch (_) {
-    store.user = null;
+    clearClientSession();
     return null;
   }
 }
@@ -515,7 +564,7 @@ root.addEventListener('click', async (e) => {
   if (logout) {
     e.preventDefault();
     try { await api('/api/auth/logout', { method: 'POST' }); } catch (_) { /* ignore */ }
-    store.user = null;
+    clearClientSession();
     nav('landing');
     return;
   }
@@ -937,6 +986,7 @@ root.addEventListener('submit', async (e) => {
     try {
       const data = await api('/api/auth/student', { method: 'POST', body: { name: fd.get('name'), password: fd.get('password') } });
       store.user = data.user;
+      store.track = parseLang(data.user.language) || 'ru';
       nav('dashboard');
     } catch (err) {
       setError(form, err.message);
@@ -952,12 +1002,13 @@ root.addEventListener('submit', async (e) => {
           name: fd.get('name'),
           password: fd.get('password'),
           passwordConfirm: fd.get('passwordConfirm'),
-          language: fd.get('language') || 'RU',
+          language: fd.get('language') || 'ru',
           enrollmentLevel: fd.get('enrollmentLevel') || 'BEGINNER',
         },
       });
       store.user = data.user;
-      toast(parseLang(data.user.language) === 'EN'
+      store.track = parseLang(data.user.language) || 'ru';
+      toast(parseLang(data.user.language) === 'en'
         ? 'Account created. Your teacher sees your English level.'
         : 'Аккаунт создан. Учитель видит твой раздел и уровень.');
       nav('dashboard');
@@ -995,7 +1046,7 @@ root.addEventListener('submit', async (e) => {
       deadline: deadlineRaw ? new Date(deadlineRaw).toISOString() : null,
       studentIds,
       status,
-      language: fd.get('language') || store.track || 'RU',
+      language: fd.get('language') || store.track || 'ru',
       targetLevel: fd.get('targetLevel') || 'ALL',
     };
     try {
@@ -1009,7 +1060,7 @@ root.addEventListener('submit', async (e) => {
   }
   if (form.dataset.form === 'create-lesson') {
     const fd = new FormData(form);
-    if (!fd.get('language')) fd.set('language', store.track || 'RU');
+    if (!fd.get('language')) fd.set('language', store.track || 'ru');
     const submitBtn = form.querySelector('[type="submit"]');
     if (submitBtn) submitBtn.disabled = true;
     try {
@@ -1294,24 +1345,43 @@ async function render() {
       return;
     }
     if (name === 'training-test') { nav('training'); return; }
-    if (name === 'diagnostic' || name === 'diagnostic-result') { nav('tests'); return; }
+    if (name === 'diagnostic' || name === 'diagnostic-result') {
+      nav(`tests/${studentSubjectSlug()}`);
+      return;
+    }
 
     if (name === 'tests' || name === 'literacy') {
-      if (name === 'literacy' && !id) {
-        nav('tests/russian');
+      const mine = studentSubjectSlug();
+      // No dual-language hub for students — always land on their subject
+      if (!id || (name === 'literacy' && !id)) {
+        nav(`tests/${mine}`);
         return;
       }
-      if (!id) {
-        mount(skeletonPage(role, 'tests', 'Тесты'));
-        const data = await api('/api/tests/catalog');
+      const slugLang = languageForTestsSlug(id);
+      if (slugLang && ensureLanguageAccess(slugLang)) return;
+      if (slugLang && slugLang !== parseLang(store.user.language)) {
+        nav(`tests/${mine}`);
+        return;
+      }
+      // Unknown slug → own subject
+      if (!slugLang) {
+        nav(`tests/${mine}`);
+        return;
+      }
+      mount(skeletonPage(role, 'tests', parseLang(store.user.language) === 'en' ? 'Tests' : 'Тесты'));
+      try {
+        const data = await api(`/api/tests/subjects/${encodeURIComponent(mine)}`);
         if (token !== renderToken) return;
-        mount(views.viewTestsHub(data.subjects || []));
-        return;
+        mount(views.viewTestsSubject(data.subject, data.stats));
+      } catch (err) {
+        if (token !== renderToken) return;
+        // Cross-language or forbidden → bounce home to own tests
+        if (err.status === 403 || err.status === 404) {
+          nav(`tests/${mine}`);
+          return;
+        }
+        mount(errorState(err.message || 'Ошибка загрузки тестов'));
       }
-      mount(skeletonPage(role, 'tests', 'Тесты'));
-      const data = await api(`/api/tests/subjects/${encodeURIComponent(id)}`);
-      if (token !== renderToken) return;
-      mount(views.viewTestsSubject(data.subject, data.stats));
       return;
     }
     if (name === 'tests-quiz' || name === 'literacy-quiz') {
@@ -1478,7 +1548,7 @@ async function render() {
     mount(views.viewLanding());
   } catch (err) {
     if (err.status === 401) {
-      store.user = null;
+      clearClientSession();
       toast('Сессия истекла. Войдите снова.', 'err');
       nav('student-login');
       return;
