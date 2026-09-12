@@ -6,6 +6,17 @@ import {
 } from './ui.js';
 import { mediaUrl, lessonFileUrl } from './api.js';
 
+function authMediaPlayer(kind, path, style = '') {
+  const tag = kind === 'VIDEO' ? 'video' : 'audio';
+  const attrs = kind === 'VIDEO'
+    ? `controls playsinline style="width:100%; border-radius:18px; background:#111; ${style}"`
+    : `controls style="width:100%; ${style}"`;
+  return `<div class="auth-media-wrap">
+    <${tag} ${attrs} data-auth-media="${esc(path)}"></${tag}>
+    <p class="section-sub" data-media-error hidden style="color:var(--red); margin-top:10px;"></p>
+  </div>`;
+}
+
 function formatRichText(text) {
   const blocks = String(text || '')
     .replace(/\r\n/g, '\n')
@@ -630,15 +641,16 @@ function lessonThumb(lesson) {
 function lessonPlayer(lesson) {
   if (lesson.type === 'PDF') {
     if (!lesson.hasFile) return emptyState('Нет файла', 'PDF ещё не приложен.');
-    return `<iframe class="lesson-pdf" src="${lessonFileUrl(lesson.id)}" title="${esc(lesson.title)}"></iframe>
-      <a class="btn btn-ghost btn-sm" href="${lessonFileUrl(lesson.id)}" download="${esc(lesson.originalName || 'document.pdf')}" style="margin-top:12px;">Скачать PDF</a>`;
+    return `<iframe class="lesson-pdf" data-auth-media="${esc(lessonFileUrl(lesson.id))}" title="${esc(lesson.title)}"></iframe>
+      <p class="section-sub" data-media-error hidden style="color:var(--red); margin-top:10px;"></p>
+      <a class="btn btn-ghost btn-sm" data-auth-download="${esc(lessonFileUrl(lesson.id))}" download="${esc(lesson.originalName || 'document.pdf')}" style="margin-top:12px;">Скачать PDF</a>`;
   }
   const yt = youtubeEmbed(lesson.videoUrl);
   if (yt) {
     return `<div class="lesson-player"><iframe src="${yt}" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen title="${esc(lesson.title)}"></iframe></div>`;
   }
   if (lesson.hasFile) {
-    return `<div class="lesson-player"><video controls playsinline src="${lessonFileUrl(lesson.id)}"></video></div>`;
+    return `<div class="lesson-player">${authMediaPlayer('VIDEO', lessonFileUrl(lesson.id))}</div>`;
   }
   if (lesson.videoUrl) {
     return `<div class="lesson-player"><video controls playsinline src="${esc(lesson.videoUrl)}"></video></div>`;
@@ -1102,9 +1114,7 @@ export function viewTeacherReviewDetail(payload) {
   const a = payload.assignment;
   const s = payload.student;
   const scores = r.scores || {};
-  const player = r.type === 'VIDEO'
-    ? `<video controls playsinline src="${esc(mediaUrl(r.id))}" style="width:100%; border-radius:18px; background:#111;"></video>`
-    : `<audio controls src="${esc(mediaUrl(r.id))}" style="width:100%;"></audio>`;
+  const player = authMediaPlayer(r.type === 'VIDEO' ? 'VIDEO' : 'AUDIO', mediaUrl(r.id));
   const body = `
     <a href="#teacher-review" class="btn btn-ghost btn-sm" style="margin-bottom:18px;">${ic('arrowL', 14)} К списку на проверку</a>
     <div class="grid-2">

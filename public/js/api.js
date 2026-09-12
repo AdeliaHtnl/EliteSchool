@@ -51,3 +51,61 @@ export function mediaUrl(retellingId) {
 export function lessonFileUrl(id) {
   return apiUrl(`/api/lessons/${encodeURIComponent(id)}/file`);
 }
+
+/** Load auth-protected media via fetch+blob (video/audio src cannot send cookies cross-origin reliably). */
+export async function authMediaObjectUrl(pathOrUrl) {
+  const url = pathOrUrl.startsWith('http') ? pathOrUrl : apiUrl(pathOrUrl);
+  const res = await fetch(url, { credentials: 'include' });
+  if (!res.ok) {
+    let msg = 'Не удалось загрузить медиа.';
+    try {
+      const data = await res.json();
+      if (data?.error) msg = data.error;
+    } catch (_) {}
+    const err = new Error(msg);
+    err.status = res.status;
+    throw err;
+  }
+  const blob = await res.blob();
+  return URL.createObjectURL(blob);
+}
+
+export async function hydrateAuthMedia(root = document) {
+  const nodes = root.querySelectorAll('[data-auth-media]');
+  for (const el of nodes) {
+    const src = el.getAttribute('data-auth-media');
+    if (!src) continue;
+    const wrap = el.closest('.auth-media-wrap') || el.parentElement;
+    const fallback = wrap?.querySelector('[data-media-error]') || el.parentElement?.querySelector('[data-media-error]');
+    try {
+      const objectUrl = await authMediaObjectUrl(src);
+      el.src = objectUrl;
+      el.removeAttribute('data-auth-media');
+      if (fallback) fallback.hidden = true;
+      el.load?.();
+    } catch (err) {
+      if (fallback) {
+        fallback.hidden = false;
+        fallback.textContent = err.message || 'Медиа недоступно.';
+      }
+      el.removeAttribute('src');
+    }
+  }
+  const downloads = root.querySelectorAll('[data-auth-download]');
+  for (const a of downloads) {
+    const src = a.getAttribute('data-auth-download');
+    if (!src) continue;
+    a.addEventListener('click', async (e) => {
+      e.preventDefault();
+      try {
+        const objectUrl = await authMediaObjectUrl(src);
+        const tmp = document.createElement('a');
+        tmp.href = objectUrl;
+        tmp.download = a.getAttribute('download') || 'file';
+        tmp.click();
+      } catch (err) {
+        alert(err.message || 'Не удалось скачать файл.');
+      }
+    }, { once: false });
+  }
+}

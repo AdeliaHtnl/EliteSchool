@@ -503,13 +503,18 @@ async function persistUpload(file, type) {
       originalName: path.basename(String(file.originalname || 'file')),
     };
   }
-  // Without R2: store on local disk (works on Render; files may be lost on redeploy — prefer R2 in prod)
+  // Without R2: store on local disk + keep bytes in DB so media survives Render redeploys
   const dir = type === 'lessons' ? db.LESSONS_DIR : db.UPLOADS_DIR;
   const local = r2.writeLocal(dir, file.originalname, file.mimetype, file.buffer);
+  const MAX_INLINE = 12 * 1024 * 1024;
+  const inline = file.buffer.length <= MAX_INLINE
+    ? file.buffer.toString('base64')
+    : null;
   return {
     mediaKey: null,
     mediaUrl: null,
     mediaPath: local.filename,
+    mediaBase64: inline,
     mimeType: file.mimetype,
     size: file.buffer.length,
     originalName: path.basename(String(file.originalname || 'file')),
@@ -1025,14 +1030,29 @@ app.get('/api/retellings/:id/media', requireAuth, async (req, res) => {
       if (!obj) return res.status(404).json({ error: 'Файл записи отсутствует.' });
       res.setHeader('Content-Type', r.mimeType || obj.mimeType || 'application/octet-stream');
       res.setHeader('Content-Disposition', 'inline');
+      res.setHeader('Cache-Control', 'private, max-age=60');
       return res.send(obj.buffer);
     }
-    if (!r.mediaPath) return res.status(404).json({ error: 'Файл записи отсутствует на сервере.' });
-    const filePath = path.join(db.UPLOADS_DIR, path.basename(r.mediaPath));
-    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Файл записи отсутствует на сервере.' });
-    res.setHeader('Content-Type', r.mimeType || 'application/octet-stream');
-    res.setHeader('Content-Disposition', `inline; filename="${path.basename(filePath)}"`);
-    return res.sendFile(filePath);
+    if (r.mediaPath) {
+      const filePath = path.join(db.UPLOADS_DIR, path.basename(r.mediaPath));
+      if (fs.existsSync(filePath)) {
+        res.setHeader('Content-Type', r.mimeType || 'application/octet-stream');
+        res.setHeader('Content-Disposition', `inline; filename="${path.basename(filePath)}"`);
+        res.setHeader('Cache-Control', 'private, max-age=60');
+        return res.sendFile(filePath);
+      }
+    }
+    if (r.mediaBase64) {
+      const buf = Buffer.from(r.mediaBase64, 'base64');
+      res.setHeader('Content-Type', r.mimeType || 'application/octet-stream');
+      res.setHeader('Content-Disposition', 'inline');
+      res.setHeader('Cache-Control', 'private, max-age=60');
+      res.setHeader('Content-Length', buf.length);
+      return res.send(buf);
+    }
+    return res.status(404).json({
+      error: 'Файл записи отсутствует на сервере. Попросите ученика отправить пересказ ещё раз.',
+    });
   } catch (err) {
     console.error('media serve failed:', err.message);
     return res.status(500).json({ error: 'Не удалось отдать файл.' });
@@ -1090,6 +1110,7 @@ async function handleUpload(req, res) {
     mediaPath: stored.mediaPath,
     mediaKey: stored.mediaKey,
     mediaUrl: stored.mediaUrl,
+    mediaBase64: stored.mediaBase64 || null,
     mimeType: mimeBase(stored.mimeType || req.file.mimetype),
     duration: Math.round(duration),
     submittedAt: iso(),
@@ -2406,13 +2427,24 @@ app.get('/api/lessons/:id/file', requireAuth, async (req, res) => {
       res.setHeader('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename="${encodeURIComponent(lesson.originalName || 'file')}"`);
       return res.send(obj.buffer);
     }
-    if (!lesson.filePath) return res.status(404).json({ error: 'К этому уроку файл не приложен.' });
-    const filePath = path.join(db.LESSONS_DIR, path.basename(lesson.filePath));
-    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Файл не найден на диске.' });
-    const inline = String(lesson.mimeType || '').includes('pdf') || String(lesson.mimeType || '').startsWith('video/');
-    res.setHeader('Content-Type', lesson.mimeType || 'application/octet-stream');
-    res.setHeader('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename="${encodeURIComponent(lesson.originalName || 'file')}"`);
-    return res.sendFile(filePath);
+    if (lesson.filePath) {
+      const filePath = path.join(db.LESSONS_DIR, path.basename(lesson.filePath));
+      if (fs.existsSync(filePath)) {
+        const inline = String(lesson.mimeType || '').includes('pdf') || String(lesson.mimeType || '').startsWith('video/');
+        res.setHeader('Content-Type', lesson.mimeType || 'application/octet-stream');
+        res.setHeader('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename="${encodeURIComponent(lesson.originalName || 'file')}"`);
+        return res.sendFile(filePath);
+      }
+    }
+    if (lesson.mediaBase64) {
+      const buf = Buffer.from(lesson.mediaBase64, 'base64');
+      const inline = String(lesson.mimeType || '').includes('pdf') || String(lesson.mimeType || '').startsWith('video/');
+      res.setHeader('Content-Type', lesson.mimeType || 'application/octet-stream');
+      res.setHeader('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename="${encodeURIComponent(lesson.originalName || 'file')}"`);
+      res.setHeader('Content-Length', buf.length);
+      return res.send(buf);
+    }
+    return res.status(404).json({ error: 'К этому уроку файл не приложен или потерян после деплоя.' });
   } catch (err) {
     console.error('lesson file failed:', err.message);
     return res.status(500).json({ error: 'Не удалось отдать файл.' });
@@ -2478,6 +2510,7 @@ app.post('/api/lessons', requireAuth, requireRole('TEACHER'), (req, res) => {
       filePath: stored?.mediaPath || null,
       fileKey: stored?.mediaKey || null,
       mediaUrl: stored?.mediaUrl || null,
+      mediaBase64: stored?.mediaBase64 || null,
       mimeType: stored ? mimeBase(stored.mimeType) : '',
       originalName: stored?.originalName || '',
       studentIds,

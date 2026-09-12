@@ -1,4 +1,4 @@
-import { api, friendlyError } from './api.js';
+import { api, friendlyError, hydrateAuthMedia } from './api.js';
 import { store, ic, formatTime, ring, skeletonPage, errorState, esc, parseLang, trackSlug, subjectSlugForUser } from './ui.js';
 import * as views from './views.js';
 
@@ -168,6 +168,7 @@ function mount(html) {
   root.innerHTML = html;
   window.scrollTo({ top: 0, behavior: 'smooth' });
   bindKeyboardInset();
+  hydrateAuthMedia(root).catch(() => {});
 }
 
 function bindKeyboardInset() {
