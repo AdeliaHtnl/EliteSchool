@@ -113,9 +113,8 @@ async function deleteObject(key) {
 }
 
 function assertProductionMediaReady() {
-  if (isProduction() && !r2Configured()) {
-    throw new Error('R2_* environment variables are required in production for media uploads');
-  }
+  // R2 preferred; local disk fallback is allowed (see persistUpload)
+  return Boolean(r2Configured() || !isProduction());
 }
 
 /** Write buffer to local disk (dev fallback) */

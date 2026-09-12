@@ -62,7 +62,7 @@ function clearClientSession() {
   studentFilter = 'all';
   literacyQuiz = null;
   literacyTeacherCache = [];
-  literacyFilter = { level: 'all', result: 'all', date: 'all' };
+  literacyFilter = { lang: 'all', level: 'all', result: 'all', date: 'all' };
   literacyBusy = false;
   gameIdea = null;
   gameCloze = null;
@@ -84,7 +84,7 @@ let studentsCache = [];
 let studentFilter = 'all';
 let literacyQuiz = null;
 let literacyTeacherCache = [];
-let literacyFilter = { level: 'all', result: 'all', date: 'all' };
+let literacyFilter = { lang: 'all', level: 'all', result: 'all', date: 'all' };
 let literacyBusy = false;
 let gameIdea = null;
 let gameCloze = null;

@@ -503,11 +503,7 @@ async function persistUpload(file, type) {
       originalName: path.basename(String(file.originalname || 'file')),
     };
   }
-  if (isProduction()) {
-    const err = new Error('Media storage (R2) is not configured.');
-    err.status = 500;
-    throw err;
-  }
+  // Without R2: store on local disk (works on Render; files may be lost on redeploy — prefer R2 in prod)
   const dir = type === 'lessons' ? db.LESSONS_DIR : db.UPLOADS_DIR;
   const local = r2.writeLocal(dir, file.originalname, file.mimetype, file.buffer);
   return {
@@ -1589,7 +1585,12 @@ app.get('/api/teacher/students', requireAuth, requireRole('TEACHER'), (req, res)
         ...st,
       };
     })
-    .sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+    .sort((a, b) => {
+      const la = a.language || 'ru';
+      const lb = b.language || 'ru';
+      if (la !== lb) return la === 'ru' ? -1 : 1;
+      return a.name.localeCompare(b.name, 'ru');
+    });
   res.json({ students });
 });
 
@@ -2254,7 +2255,12 @@ app.get('/api/teacher/literacy', requireAuth, requireRole('TEACHER'), (req, res)
       russian: literacyStatsForStudent(u.id, { subjectId: 'sub-russian' }),
       english: literacyStatsForStudent(u.id, { subjectId: 'sub-english' }),
     }))
-    .sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+    .sort((a, b) => {
+      const la = a.language || 'ru';
+      const lb = b.language || 'ru';
+      if (la !== lb) return la === 'ru' ? -1 : 1;
+      return a.name.localeCompare(b.name, 'ru');
+    });
   res.json({ students });
 });
 
@@ -2545,7 +2551,7 @@ app.use((err, _req, res, _next) => {
 async function boot() {
   await db.loadAsync();
   if (isProduction() && !r2.r2Configured()) {
-    console.warn('WARNING: R2 is not configured — media uploads will fail in production');
+    console.warn('WARNING: R2 is not configured — media uses local disk (ephemeral on Render free)');
   }
   const server = app.listen(PORT, '0.0.0.0', () => {
     pruneStaleNotifications();

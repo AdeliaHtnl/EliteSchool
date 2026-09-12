@@ -882,38 +882,54 @@ export function viewTeacherTrack(lang, data = {}) {
 
 export function viewTeacherStudents(students, filter = 'all') {
   const filtered = students.filter((s) => {
+    const lang = parseLang(s.language) || 'ru';
+    if (filter === 'ru') return lang === 'ru';
+    if (filter === 'en') return lang === 'en';
     if (filter === 'done') return s.pendingCount === 0 && s.assignedCount > 0;
     if (filter === 'todo') return s.pendingCount > 0;
     if (filter === 'review') return s.inReviewCount > 0;
     if (filter === 'high') return (s.avgScore || 0) >= 75;
     if (filter === 'low') return s.avgScore != null && s.avgScore < 60;
     return true;
+  }).slice().sort((a, b) => {
+    const la = parseLang(a.language) || 'ru';
+    const lb = parseLang(b.language) || 'ru';
+    if (la !== lb) return la === 'ru' ? -1 : 1;
+    return String(a.name || '').localeCompare(String(b.name || ''), 'ru');
   });
+  const ruN = students.filter((s) => (parseLang(s.language) || 'ru') === 'ru').length;
+  const enN = students.filter((s) => parseLang(s.language) === 'en').length;
   const body = `
     <div class="card card-lg">
       <div class="filter-row">
-        ${[['all', 'Все'], ['done', 'Выполнено'], ['todo', 'Не выполнено'], ['review', 'На проверке'], ['high', 'Высокий результат'], ['low', 'Низкий результат']].map(([id, label]) => `<button type="button" data-action="student-filter" data-filter="${id}" class="${filter === id ? 'on' : ''}">${label}</button>`).join('')}
+        ${[['all', `Все (${students.length})`], ['ru', `Русский (${ruN})`], ['en', `English (${enN})`], ['done', 'Выполнено'], ['todo', 'Не выполнено'], ['review', 'На проверке'], ['high', 'Высокий результат'], ['low', 'Низкий результат']].map(([id, label]) => `<button type="button" data-action="student-filter" data-filter="${id}" class="${filter === id ? 'on' : ''}">${label}</button>`).join('')}
       </div>
       ${filtered.length ? `<div class="table-wrap desktop-only"><table class="data">
-        <thead><tr><th>Ученик</th><th>Раздел · уровень</th><th>По оценкам</th><th>Проверено</th><th>Не сдано</th><th>Средняя оценка</th><th>Последняя активность</th><th></th></tr></thead>
-        <tbody>${filtered.map((s) => `<tr>
+        <thead><tr><th>Ученик</th><th>Язык</th><th>Уровень</th><th>По оценкам</th><th>Проверено</th><th>Не сдано</th><th>Средняя оценка</th><th>Последняя активность</th><th></th></tr></thead>
+        <tbody>${filtered.map((s) => {
+          const lang = parseLang(s.language) || 'ru';
+          return `<tr>
           <td><div class="student-cell"><div class="avatar" style="width:30px;height:30px;font-size:11px;">${esc(initials(s.name))}</div>${esc(s.name)}</div></td>
-          <td>${esc(langLabel(s.language))} · ${esc(levelLabel(s.enrollmentLevel))}</td>
+          <td><span class="pill ${lang === 'en' ? 'pill-en' : 'pill-ru'}">${esc(langLabel(lang))}</span></td>
+          <td>${esc(levelLabel(s.enrollmentLevel))}</td>
           <td>${s.completedCount ? esc(s.level) : '—'}</td>
           <td>${s.completedCount}</td>
           <td>${s.pendingCount}</td>
           <td>${s.avgScore ?? '—'}</td>
           <td><span class="status-dot ${s.inReviewCount ? 'progress' : s.pendingCount ? 'pending' : 'done'}"></span>${esc(relativeDate(s.lastActiveAt))}</td>
           <td><a href="#teacher-student-detail/${esc(s.id)}" class="btn btn-ghost btn-sm">Открыть</a></td>
-        </tr>`).join('')}</tbody>
+        </tr>`;
+        }).join('')}</tbody>
       </table></div>
-      <div class="m-card-list">${filtered.map((s) => `
+      <div class="m-card-list">${filtered.map((s) => {
+        const lang = parseLang(s.language) || 'ru';
+        return `
         <article class="m-card">
           <div class="m-card-head">
             <div class="avatar">${esc(initials(s.name))}</div>
             <div>
               <p class="t-title">${esc(s.name)}</p>
-              <p class="t-meta">${esc(langLabel(s.language))} · ${esc(levelLabel(s.enrollmentLevel))} · по оценкам: ${s.completedCount ? esc(s.level) : '—'}</p>
+              <p class="t-meta"><span class="pill ${lang === 'en' ? 'pill-en' : 'pill-ru'}">${esc(langLabel(lang))}</span> · ${esc(levelLabel(s.enrollmentLevel))} · по оценкам: ${s.completedCount ? esc(s.level) : '—'}</p>
             </div>
           </div>
           <dl class="m-card-meta">
@@ -922,10 +938,11 @@ export function viewTeacherStudents(students, filter = 'all') {
             <div><dt>Средняя оценка</dt><dd>${s.avgScore ?? '—'}</dd></div>
           </dl>
           <a href="#teacher-student-detail/${esc(s.id)}" class="btn btn-primary">Открыть профиль</a>
-        </article>`).join('')}</div>` : emptyState('Никого не найдено', 'Измените фильтр.')}
+        </article>`;
+      }).join('')}</div>` : emptyState('Никого не найдено', 'Измените фильтр.')}
     </div>
   `;
-  return appPage('teacher', 'teacher-students', 'Ученики', `${students.length} учеников`, body);
+  return appPage('teacher', 'teacher-students', 'Ученики', `${ruN} RU · ${enN} EN`, body);
 }
 
 export function viewTeacherStudentDetail(payload) {
@@ -1640,9 +1657,12 @@ export function viewTestsSubject(subject, stats) {
 }
 
 export function viewTeacherLiteracy(students, filter) {
-  const f = filter || { level: 'all', result: 'all', date: 'all' };
+  const f = filter || { lang: 'all', level: 'all', result: 'all', date: 'all' };
   const now = Date.now();
   const filtered = (students || []).filter((s) => {
+    const lang = parseLang(s.language) || 'ru';
+    if (f.lang === 'ru' && lang !== 'ru') return false;
+    if (f.lang === 'en' && lang !== 'en') return false;
     if (f.level !== 'all') {
       if (f.level === 'none') { if (s.lastLevel) return false; }
       else if (s.lastLevel !== f.level) return false;
@@ -1664,10 +1684,27 @@ export function viewTeacherLiteracy(students, filter) {
       if (f.date === 'none') return false;
     }
     return true;
+  }).slice().sort((a, b) => {
+    const la = parseLang(a.language) || 'ru';
+    const lb = parseLang(b.language) || 'ru';
+    if (la !== lb) return la === 'ru' ? -1 : 1;
+    return String(a.name || '').localeCompare(String(b.name || ''), 'ru');
   });
+  const ruCount = (students || []).filter((s) => (parseLang(s.language) || 'ru') === 'ru').length;
+  const enCount = (students || []).filter((s) => parseLang(s.language) === 'en').length;
   const chip = (group, value, label) => `<button type="button" data-action="lit-filter" data-group="${group}" data-value="${value}" class="${f[group] === value ? 'on' : ''}">${label}</button>`;
+  const langBadge = (s) => {
+    const lang = parseLang(s.language) || 'ru';
+    return `<span class="pill ${lang === 'en' ? 'pill-en' : 'pill-ru'}">${esc(langLabel(lang))}</span>`;
+  };
   const body = `
     <div class="card card-lg">
+      <p class="section-sub" style="margin-bottom:8px;">Язык / Language</p>
+      <div class="filter-row">
+        ${chip('lang', 'all', `Все (${students.length})`)}
+        ${chip('lang', 'ru', `Русский (${ruCount})`)}
+        ${chip('lang', 'en', `English (${enCount})`)}
+      </div>
       <p class="section-sub" style="margin-bottom:8px;">Уровень</p>
       <div class="filter-row">
         ${chip('level', 'all', 'Все')}
@@ -1691,11 +1728,12 @@ export function viewTeacherLiteracy(students, filter) {
         ${chip('date', 'none', 'Не проходили')}
       </div>
       ${filtered.length ? `<div class="table-wrap desktop-only"><table class="data">
-        <thead><tr><th>Ученик</th><th>Уровень</th><th>Последний</th><th>Средний</th><th>Слабые категории</th><th>Динамика</th><th></th></tr></thead>
+        <thead><tr><th>Ученик</th><th>Язык</th><th>Уровень</th><th>Последний</th><th>Средний</th><th>Слабые категории</th><th>Динамика</th><th></th></tr></thead>
         <tbody>${filtered.map((s) => {
           const weak = (s.weakTopics || []).map((t) => t.topic).join(', ') || '—';
           return `<tr>
             <td><div class="student-cell"><div class="avatar" style="width:30px;height:30px;font-size:11px;">${esc(initials(s.name))}</div>${esc(s.name)}</div></td>
+            <td>${langBadge(s)}</td>
             <td>${esc(s.lastLevel || '—')}</td>
             <td>${s.lastPercent != null ? s.lastPercent + '%' : '—'}</td>
             <td>${s.avgPercent != null ? s.avgPercent + '%' : '—'}</td>
@@ -1712,7 +1750,7 @@ export function viewTeacherLiteracy(students, filter) {
             <div class="avatar">${esc(initials(s.name))}</div>
             <div>
               <p class="t-title">${esc(s.name)}</p>
-              <p class="t-meta">Уровень: ${esc(s.lastLevel || '—')}</p>
+              <p class="t-meta">${langBadge(s)} · Уровень: ${esc(s.lastLevel || '—')}</p>
             </div>
           </div>
           <dl class="m-card-meta">
@@ -1724,7 +1762,7 @@ export function viewTeacherLiteracy(students, filter) {
         </article>`;
       }).join('')}</div>` : emptyState('Никого не найдено', 'Измените фильтры.')}
     </div>`;
-  return appPage('teacher', 'teacher-literacy', 'Тесты', `${students.length} учеников · English и Русский`, body);
+  return appPage('teacher', 'teacher-literacy', 'Тесты', `${ruCount} RU · ${enCount} EN`, body);
 }
 
 export function viewTeacherLiteracyStudent(student) {
@@ -1740,7 +1778,7 @@ export function viewTeacherLiteracyStudent(student) {
           <div class="avatar" style="width:56px;height:56px;font-size:17px;">${esc(initials(s.name))}</div>
           <div>
             <p class="section-title" style="margin-bottom:2px;">${esc(s.name)}</p>
-            <p class="section-sub" style="margin:0;">${s.lastLevel ? `${esc(s.lastLevel)} · ${esc(s.lastLevelTitle || '')}` : 'Тесты ещё не пройдены'}</p>
+            <p class="section-sub" style="margin:0;"><span class="pill ${(parseLang(s.language) || 'ru') === 'en' ? 'pill-en' : 'pill-ru'}">${esc(langLabel(s.language || 'ru'))}</span> · ${s.lastLevel ? `${esc(s.lastLevel)} · ${esc(s.lastLevelTitle || '')}` : 'Тесты ещё не пройдены'}</p>
           </div>
         </div>
         <div class="grid-3" style="gap:10px;">
