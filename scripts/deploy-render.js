@@ -24,7 +24,9 @@ if (!sessionSecret || /change-me/i.test(sessionSecret)) {
   console.log('NOTE: generated SESSION_SECRET for Render (not written to local .env)');
 }
 
-const frontendUrl = String(process.env.FRONTEND_URL || '').trim() || 'https://placeholder.vercel.app';
+const frontendUrl = String(process.env.FRONTEND_URL || '').trim()
+  || process.env.DEPLOY_FRONTEND_URL
+  || 'https://eliteschool-web.onrender.com';
 
 // Use KEY=VALUE flags so Windows shells don't split "npm install"
 const args = [

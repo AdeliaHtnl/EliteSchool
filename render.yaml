@@ -3,6 +3,7 @@ services:
     name: eliteschool-api
     runtime: node
     plan: free
+    region: oregon
     buildCommand: npm install
     startCommand: npm start
     healthCheckPath: /health
@@ -31,3 +32,15 @@ services:
         sync: false
       - key: AI_API_KEY
         sync: false
+
+  - type: web
+    name: eliteschool-web
+    runtime: static
+    plan: free
+    buildCommand: echo "static"
+    staticPublishPath: public
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars: []
