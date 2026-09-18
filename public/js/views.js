@@ -1204,12 +1204,14 @@ export function viewTeacherProfile(totals) {
   return appPage('teacher', 'teacher-profile', 'Профиль', null, body);
 }
 
-export function viewTeacherVideoLessons(lessons) {
+export function viewTeacherVideoLessons(lessons, lang = 'ru') {
   const list = lessons || [];
+  const back = `teacher-video-lessons/${trackSlug(lang)}`;
+  const createHref = `teacher-video-create/${trackSlug(lang)}`;
   const body = `
     <div class="row-between" style="margin-bottom:18px; gap:12px; flex-wrap:wrap;">
       <p class="section-sub" style="margin:0;">Видео, которые видят все ваши ученики в разделе «Видеоуроки».</p>
-      <a href="#teacher-video-create" class="btn btn-primary btn-sm">${ic('plus', 14)} Добавить видеоурок</a>
+      <a href="#${createHref}" class="btn btn-primary btn-sm">${ic('plus', 14)} Добавить видеоурок</a>
     </div>
     <div class="card card-lg">
       ${list.length ? `<div class="table-wrap desktop-only"><table class="data">
@@ -1219,7 +1221,7 @@ export function viewTeacherVideoLessons(lessons) {
           <td>${esc(v.category)}</td><td>${esc(v.level || '—')}</td><td>${esc(v.duration || '—')}</td>
           <td style="white-space:nowrap;">
             <a href="#teacher-lesson/${esc(v.id)}" class="btn btn-ghost btn-sm">Открыть</a>
-            <button type="button" class="btn btn-ghost btn-sm" data-action="delete-lesson" data-id="${esc(v.id)}" data-back="teacher-video-lessons">Удалить</button>
+            <button type="button" class="btn btn-ghost btn-sm" data-action="delete-lesson" data-id="${esc(v.id)}" data-back="${back}">Удалить</button>
           </td>
         </tr>`).join('')}</tbody>
       </table></div>
@@ -1228,7 +1230,7 @@ export function viewTeacherVideoLessons(lessons) {
           <p class="t-title">${esc(v.title)}</p>
           <p class="t-meta" style="margin:4px 0 12px;">${esc(v.category)} · ${esc(v.level || '—')} · ${esc(v.duration || '—')}</p>
           <a href="#teacher-lesson/${esc(v.id)}" class="btn btn-primary" style="margin-bottom:8px;">Открыть</a>
-          <button type="button" class="btn btn-ghost" data-action="delete-lesson" data-id="${esc(v.id)}" data-back="teacher-video-lessons">Удалить</button>
+          <button type="button" class="btn btn-ghost" data-action="delete-lesson" data-id="${esc(v.id)}" data-back="${back}">Удалить</button>
         </article>`).join('')}</div>` : emptyState('Пока пусто', 'Добавьте первый видеоурок — ученики увидят его сразу.')}
     </div>
   `;

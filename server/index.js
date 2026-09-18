@@ -2585,22 +2585,31 @@ app.post('/api/lessons/:id/file', requireAuth, requireRole('TEACHER'), (req, res
 });
 
 app.delete('/api/lessons/:id', requireAuth, requireRole('TEACHER'), async (req, res) => {
-  const idx = store().lessons.findIndex((l) => l.id === req.params.id);
-  if (idx < 0) return res.status(404).json({ error: 'Урок не найден.' });
-  const lesson = store().lessons[idx];
-  if (lesson.teacherId !== req.auth.user.id) {
-    return res.status(403).json({ error: 'Нет доступа к этому уроку.' });
+  try {
+    const idx = store().lessons.findIndex((l) => l.id === req.params.id);
+    if (idx < 0) return res.status(404).json({ error: 'Урок не найден.' });
+    const lesson = store().lessons[idx];
+    if (lesson.teacherId !== req.auth.user.id) {
+      return res.status(403).json({ error: 'Нет доступа к этому уроку.' });
+    }
+    if (lesson.fileKey && r2.r2Configured()) {
+      try { await r2.deleteObject(lesson.fileKey); } catch (_) { /* ignore */ }
+    }
+    if (lesson.filePath) {
+      const filePath = path.join(db.LESSONS_DIR, path.basename(lesson.filePath));
+      try { fs.unlinkSync(filePath); } catch (_) { /* ignore */ }
+    }
+    store().lessons.splice(idx, 1);
+    // Direct SQL delete so the row cannot "come back" if a full rewrite is slow/fails
+    if (pg.hasDatabaseUrl()) {
+      await pg.query('DELETE FROM lessons WHERE id = $1', [req.params.id]);
+    }
+    await save();
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('lesson delete failed:', err.message);
+    res.status(500).json({ error: 'Не удалось удалить урок.' });
   }
-  if (lesson.fileKey && r2.r2Configured()) {
-    try { await r2.deleteObject(lesson.fileKey); } catch (_) { /* ignore */ }
-  }
-  if (lesson.filePath) {
-    const filePath = path.join(db.LESSONS_DIR, path.basename(lesson.filePath));
-    try { fs.unlinkSync(filePath); } catch (_) { /* ignore */ }
-  }
-  store().lessons.splice(idx, 1);
-  save();
-  res.json({ ok: true });
 });
 
 app.use(express.static(path.join(__dirname, '..', 'public'), {

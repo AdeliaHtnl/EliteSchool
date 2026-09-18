@@ -769,16 +769,24 @@ root.addEventListener('click', async (e) => {
 
   const delLesson = e.target.closest('[data-action="delete-lesson"]');
   if (delLesson) {
+    e.preventDefault();
     if (!window.confirm('Удалить этот урок? Ученики больше его не увидят.')) return;
     delLesson.disabled = true;
     try {
-      await api(`/api/lessons/${delLesson.dataset.id}`, { method: 'DELETE' });
+      await api(`/api/lessons/${encodeURIComponent(delLesson.dataset.id)}`, { method: 'DELETE' });
       toast('Урок удалён.');
-      nav(delLesson.dataset.back || 'teacher-video-lessons');
+      const backBase = delLesson.dataset.back || 'teacher-video-lessons';
+      const back = backBase.includes('/')
+        ? backBase
+        : `${backBase}/${trackSlug(store.track || 'ru')}`;
+      const current = location.hash.replace(/^#\/?/, '');
+      if (current === back || current === backBase) await render();
+      else nav(back);
     } catch (err) {
       toast(err.message, 'err');
       delLesson.disabled = false;
     }
+    return;
   }
 
   const storyMove = e.target.closest('[data-action="story-move"]');
@@ -1515,7 +1523,7 @@ async function render() {
       store.track = lang;
       const data = await api(`/api/lessons?section=VIDEO&language=${lang}`);
       if (token !== renderToken) return;
-      mount(views.viewTeacherVideoLessons(data.lessons || []));
+      mount(views.viewTeacherVideoLessons(data.lessons || [], lang));
       return;
     }
     if (name === 'teacher-video-create') {
