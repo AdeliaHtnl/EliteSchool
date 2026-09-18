@@ -503,18 +503,24 @@ async function persistUpload(file, type) {
       originalName: path.basename(String(file.originalname || 'file')),
     };
   }
-  // Without R2: store on local disk + keep bytes in DB so media survives Render redeploys
+  // Without R2: persist bytes in Neon (mediaBase64) so files survive Render redeploys.
+  // Local disk is cache only — Render free wipes it on every deploy.
   const dir = type === 'lessons' ? db.LESSONS_DIR : db.UPLOADS_DIR;
   const local = r2.writeLocal(dir, file.originalname, file.mimetype, file.buffer);
-  const MAX_INLINE = 12 * 1024 * 1024;
-  const inline = file.buffer.length <= MAX_INLINE
-    ? file.buffer.toString('base64')
-    : null;
+  const MAX_INLINE = 40 * 1024 * 1024;
+  if (file.buffer.length > MAX_INLINE) {
+    const err = new Error(
+      'Без облачного хранилища (R2) файл больше 40 МБ не сохранится после обновления сервера. '
+      + 'Вставьте ссылку YouTube или загрузите файл меньше 40 МБ.'
+    );
+    err.status = 400;
+    throw err;
+  }
   return {
     mediaKey: null,
     mediaUrl: null,
     mediaPath: local.filename,
-    mediaBase64: inline,
+    mediaBase64: file.buffer.toString('base64'),
     mimeType: file.mimetype,
     size: file.buffer.length,
     originalName: path.basename(String(file.originalname || 'file')),
@@ -2311,6 +2317,8 @@ const LESSON_TYPE_META = {
 
 function publicLesson(l, { forTeacher = false } = {}) {
   const teacher = store().users.find((u) => u.id === l.teacherId);
+  const durable = !!(l.fileKey || l.mediaUrl || l.mediaBase64 || (l.videoUrl && String(l.videoUrl).trim()));
+  const hasFile = !!(l.filePath || l.fileKey || l.mediaUrl || l.mediaBase64);
   const out = {
     id: l.id,
     teacherId: l.teacherId,
@@ -2328,7 +2336,8 @@ function publicLesson(l, { forTeacher = false } = {}) {
     videoUrl: l.videoUrl || '',
     duration: l.duration || '',
     createdAt: l.createdAt,
-    hasFile: !!(l.filePath || l.fileKey || l.mediaUrl),
+    hasFile,
+    mediaDurable: durable,
     mimeType: l.mimeType || '',
     originalName: l.originalName || '',
   };
@@ -2535,6 +2544,42 @@ app.post('/api/lessons', requireAuth, requireRole('TEACHER'), (req, res) => {
     } catch (e) {
       console.error('lesson create failed:', e.message);
       res.status(e.status || 500).json({ error: e.message || 'Не удалось создать урок.' });
+    }
+  });
+});
+
+app.post('/api/lessons/:id/file', requireAuth, requireRole('TEACHER'), (req, res) => {
+  uploadLesson.single('file')(req, res, async (err) => {
+    try {
+      if (err) return res.status(400).json({ error: err.message || 'Не удалось загрузить файл.' });
+      const lesson = store().lessons.find((l) => l.id === req.params.id);
+      if (!lesson) return res.status(404).json({ error: 'Урок не найден.' });
+      if (lesson.teacherId !== req.auth.user.id) {
+        return res.status(403).json({ error: 'Нет доступа к этому уроку.' });
+      }
+      const file = req.file;
+      const videoUrl = String(req.body?.videoUrl || '').trim();
+      if (!file && !videoUrl) {
+        return res.status(400).json({ error: 'Загрузите файл или вставьте ссылку YouTube.' });
+      }
+      if (file) {
+        const stored = await persistUpload(file, 'lessons');
+        if (lesson.fileKey && r2.r2Configured()) {
+          try { await r2.deleteObject(lesson.fileKey); } catch (_) { /* ignore */ }
+        }
+        lesson.filePath = stored.mediaPath || null;
+        lesson.fileKey = stored.mediaKey || null;
+        lesson.mediaUrl = stored.mediaUrl || null;
+        lesson.mediaBase64 = stored.mediaBase64 || null;
+        lesson.mimeType = mimeBase(stored.mimeType);
+        lesson.originalName = stored.originalName || '';
+      }
+      if (videoUrl) lesson.videoUrl = videoUrl;
+      save();
+      res.json({ lesson: publicLesson(lesson, { forTeacher: true }) });
+    } catch (e) {
+      console.error('lesson file replace failed:', e.message);
+      res.status(e.status || 500).json({ error: e.message || 'Не удалось обновить файл.' });
     }
   });
 });

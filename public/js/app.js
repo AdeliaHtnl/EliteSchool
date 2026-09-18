@@ -1059,6 +1059,21 @@ root.addEventListener('submit', async (e) => {
     }
     return;
   }
+  if (form.dataset.form === 'lesson-replace-file') {
+    const fd = new FormData(form);
+    const id = form.dataset.id;
+    const submitBtn = form.querySelector('[type="submit"]');
+    if (submitBtn) submitBtn.disabled = true;
+    try {
+      await api(`/api/lessons/${encodeURIComponent(id)}/file`, { method: 'POST', body: fd });
+      toast('Медиа обновлено.');
+      nav(`teacher-lesson/${id}`);
+    } catch (err) {
+      setError(form, err.message);
+      if (submitBtn) submitBtn.disabled = false;
+    }
+    return;
+  }
   if (form.dataset.form === 'create-lesson') {
     const fd = new FormData(form);
     if (!fd.get('language')) fd.set('language', store.track || 'ru');

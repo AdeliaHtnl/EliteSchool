@@ -1278,9 +1278,11 @@ export function viewTeacherVideoCreate(lang = 'ru') {
           <div class="field span-2"><label>${isEn ? 'Description' : 'Описание'}</label><textarea name="description" placeholder="${isEn ? 'What the lesson is about' : 'Коротко, о чём урок'}"></textarea></div>
           <div class="field"><label>${isEn ? 'Duration' : 'Длительность'}</label><input name="duration" type="text" placeholder="6:12"></div>
           <div class="field"><label>YouTube</label><input name="videoUrl" type="url" placeholder="https://youtu.be/…"></div>
-          <div class="field span-2"><label>${isEn ? 'Or upload a video file' : 'Или загрузите видеофайл'}</label><input name="file" type="file" accept="video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov"></div>
+          <div class="field span-2"><label>${isEn ? 'Or upload a video file (max 40 MB)' : 'Или загрузите видеофайл (макс. 40 МБ)'}</label><input name="file" type="file" accept="video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov"></div>
         </div>
-        <p class="section-sub">${isEn ? 'Shown only in the English section for the chosen level.' : 'Урок увидят только ученики этого раздела и выбранного уровня.'}</p>
+        <p class="section-sub">${isEn
+          ? 'Prefer YouTube for long videos — uploaded files without cloud storage can disappear after server updates.'
+          : 'Для длинных видео лучше YouTube. Загруженные файлы без облака могут пропасть после обновления сервера.'}</p>
         <button type="submit" class="btn btn-primary btn-block" style="margin-top:8px;">${ic('plus', 16)} ${isEn ? 'Publish lesson' : 'Опубликовать урок'}</button>
       </form>
     </div>
@@ -1374,6 +1376,7 @@ export function viewTeacherBonusCreate(students, lang = 'ru') {
 export function viewTeacherLessonDetail(payload) {
   const l = payload.lesson;
   const back = l.section === 'BONUS' ? 'teacher-bonus' : 'teacher-video-lessons';
+  const needsFix = !l.mediaDurable || (!l.videoUrl && l.hasFile === false);
   const body = `
     <a href="#${back}" class="btn btn-ghost btn-sm" style="margin-bottom:18px;">${ic('arrowL', 14)} Назад</a>
     <div class="card card-lg">
@@ -1381,6 +1384,14 @@ export function viewTeacherLessonDetail(payload) {
       <h2 style="font-size:21px; margin:0 0 12px;">${esc(l.title)}</h2>
       ${l.description ? `<p class="hint">${esc(l.description)}</p>` : ''}
       ${lessonPlayer(l)}
+      ${!l.mediaDurable ? `<p class="section-sub" style="color:var(--amber); margin-top:12px;">Файл мог пропасть после обновления сервера (Render стирает локальные файлы). Загрузите снова или вставьте YouTube — тогда видео сохранится.</p>` : ''}
+      <form data-form="lesson-replace-file" data-id="${esc(l.id)}" style="margin-top:18px; display:grid; gap:12px;">
+        <p class="section-title" style="margin:0;">${needsFix ? 'Восстановить видео' : 'Заменить файл / ссылку'}</p>
+        <div class="field"><label>YouTube (рекомендуется)</label><input name="videoUrl" type="url" placeholder="https://youtu.be/…" value="${esc(l.videoUrl || '')}"></div>
+        <div class="field"><label>Или файл (до 40 МБ)</label><input name="file" type="file" accept="video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov,application/pdf,.pdf"></div>
+        <div class="form-error" data-error hidden></div>
+        <button type="submit" class="btn btn-primary">${ic('plus', 16)} Сохранить медиа</button>
+      </form>
     </div>
   `;
   return appPage('teacher', l.section === 'BONUS' ? 'teacher-bonus' : 'teacher-video-lessons', l.title, null, body);
