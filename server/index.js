@@ -2600,11 +2600,12 @@ app.delete('/api/lessons/:id', requireAuth, requireRole('TEACHER'), async (req, 
       try { fs.unlinkSync(filePath); } catch (_) { /* ignore */ }
     }
     store().lessons.splice(idx, 1);
-    // Direct SQL delete so the row cannot "come back" if a full rewrite is slow/fails
+    // Fast path: do NOT await full DB rewrite (mediaBase64 can make persist hang for minutes)
     if (pg.hasDatabaseUrl()) {
       await pg.query('DELETE FROM lessons WHERE id = $1', [req.params.id]);
+    } else {
+      await save();
     }
-    await save();
     res.json({ ok: true });
   } catch (err) {
     console.error('lesson delete failed:', err.message);
