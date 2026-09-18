@@ -774,21 +774,11 @@ root.addEventListener('click', async (e) => {
     if (!window.confirm('Удалить этот урок? Ученики больше его не увидят.')) return;
     delLesson.dataset.busy = '1';
     delLesson.disabled = true;
-    const row = delLesson.closest('tr, .m-card');
     try {
       await api(`/api/lessons/${encodeURIComponent(delLesson.dataset.id)}`, { method: 'DELETE' });
       toast('Урок удалён.');
-      if (row) row.remove();
-      const left = root.querySelectorAll('[data-action="delete-lesson"]').length;
-      if (!left) {
-        const backBase = delLesson.dataset.back || 'teacher-video-lessons';
-        const back = backBase.includes('/')
-          ? backBase
-          : `${backBase}/${trackSlug(store.track || 'ru')}`;
-        const current = location.hash.replace(/^#\/?/, '');
-        if (current === back || current === backBase) await render();
-        else nav(back);
-      }
+      // Always remount — page has both desktop table + mobile cards
+      await render();
     } catch (err) {
       toast(err.message, 'err');
       delLesson.disabled = false;
