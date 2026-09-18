@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS retellings (
   media_key TEXT,
   media_path TEXT,
   mime_type TEXT,
+  media_base64 TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   submitted_at TIMESTAMPTZ,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -113,9 +114,14 @@ CREATE TABLE IF NOT EXISTS lessons (
   file_key TEXT,
   file_path TEXT,
   mime_type TEXT,
+  media_base64 TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   data JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 CREATE INDEX IF NOT EXISTS lessons_teacher_lang_idx ON lessons (teacher_id, language);
 CREATE INDEX IF NOT EXISTS lessons_section_idx ON lessons (section);
+
+-- Existing DBs created before media_base64 column
+ALTER TABLE retellings ADD COLUMN IF NOT EXISTS media_base64 TEXT;
+ALTER TABLE lessons ADD COLUMN IF NOT EXISTS media_base64 TEXT;

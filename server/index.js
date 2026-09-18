@@ -2526,6 +2526,7 @@ app.post('/api/lessons', requireAuth, requireRole('TEACHER'), (req, res) => {
       createdAt: iso(),
     };
     store().lessons.push(lesson);
+    await db.upsertLessonPg(lesson);
     const pool = studentsOfTeacher(teacher.id, { language, level: targetLevel });
     const targets = studentIds.length
       ? store().users.filter((u) => studentIds.includes(u.id))
@@ -2539,7 +2540,7 @@ app.post('/api/lessons', requireAuth, requireRole('TEACHER'), (req, res) => {
         link,
       });
     });
-    save();
+    save(); // notifications etc.; lessons already upserted
     res.status(201).json({ lesson: publicLesson(lesson, { forTeacher: true }) });
     } catch (e) {
       console.error('lesson create failed:', e.message);
@@ -2575,7 +2576,7 @@ app.post('/api/lessons/:id/file', requireAuth, requireRole('TEACHER'), (req, res
         lesson.originalName = stored.originalName || '';
       }
       if (videoUrl) lesson.videoUrl = videoUrl;
-      save();
+      await db.upsertLessonPg(lesson);
       res.json({ lesson: publicLesson(lesson, { forTeacher: true }) });
     } catch (e) {
       console.error('lesson file replace failed:', e.message);

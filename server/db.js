@@ -206,7 +206,7 @@ async function loadFromPostgres() {
   );
   const retellings = await pg.query(
     `SELECT id, assignment_id, student_id, language, status, media_key, media_path, mime_type,
-            created_at, submitted_at, data FROM retellings`
+            media_base64, created_at, submitted_at, data FROM retellings`
   );
   const notifications = await pg.query(
     `SELECT id, user_id, title, body, read, created_at, data FROM notifications`
@@ -216,7 +216,8 @@ async function loadFromPostgres() {
      FROM quiz_attempts`
   );
   const lessons = await pg.query(
-    `SELECT id, teacher_id, language, section, title, file_key, file_path, mime_type, created_at, data
+    `SELECT id, teacher_id, language, section, title, file_key, file_path, mime_type,
+            media_base64, created_at, data
      FROM lessons`
   );
 
@@ -260,8 +261,9 @@ async function loadFromPostgres() {
   }).filter((f) => f && f.assignmentId && f.studentId);
   db.retellings = retellings.rows.map((r) => {
     const d = rowData(r) || {};
+    const { mediaBase64: _drop, ...rest } = d;
     return {
-      ...d,
+      ...rest,
       id: d.id || r.id,
       assignmentId: d.assignmentId || r.assignment_id,
       studentId: d.studentId || r.student_id,
@@ -270,6 +272,7 @@ async function loadFromPostgres() {
       mediaKey: d.mediaKey || r.media_key,
       mediaPath: d.mediaPath || r.media_path,
       mimeType: d.mimeType || r.mime_type,
+      mediaBase64: r.media_base64 || d.mediaBase64 || null,
       submittedAt: d.submittedAt || r.submitted_at,
     };
   }).filter((x) => x && x.id);
@@ -300,8 +303,9 @@ async function loadFromPostgres() {
   }).filter((a) => a && a.id);
   db.lessons = lessons.rows.map((r) => {
     const d = rowData(r) || {};
+    const { mediaBase64: _drop, ...rest } = d;
     return {
-      ...d,
+      ...rest,
       id: d.id || r.id,
       teacherId: d.teacherId || r.teacher_id,
       language: d.language || r.language,
@@ -310,6 +314,7 @@ async function loadFromPostgres() {
       fileKey: d.fileKey || r.file_key,
       filePath: d.filePath || r.file_path,
       mimeType: d.mimeType || r.mime_type,
+      mediaBase64: r.media_base64 || d.mediaBase64 || null,
       createdAt: d.createdAt || r.created_at,
     };
   }).filter((l) => l && l.id);
@@ -325,7 +330,7 @@ async function persistToPostgres() {
     await client.query('DELETE FROM flow_sessions');
     await client.query('DELETE FROM assignment_students');
     await client.query('DELETE FROM assignments');
-    await client.query('DELETE FROM lessons');
+    // lessons: synced via dedicated SQL in API (avoid rewriting huge media_base64 on every save)
     await client.query('DELETE FROM auth_sessions');
     await client.query('DELETE FROM users');
 
@@ -403,11 +408,14 @@ async function persistToPostgres() {
       const student = db.users.find((u) => u.id === r.studentId);
       const assignment = db.assignments.find((a) => a.id === r.assignmentId);
       const language = normalizeLanguage(r.language || student?.language || assignment?.language) || 'ru';
+      const lean = { ...r };
+      const mediaBase64 = lean.mediaBase64 || null;
+      delete lean.mediaBase64;
       await client.query(
         `INSERT INTO retellings (
            id, assignment_id, student_id, language, status, media_key, media_path, mime_type,
-           created_at, submitted_at, data
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)`,
+           media_base64, created_at, submitted_at, data
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb)`,
         [
           r.id,
           r.assignmentId,
@@ -417,9 +425,10 @@ async function persistToPostgres() {
           r.mediaKey || null,
           r.mediaPath || null,
           r.mimeType || null,
+          mediaBase64,
           r.createdAt || r.submittedAt || nowIso(),
           r.submittedAt || null,
-          JSON.stringify(r),
+          JSON.stringify(lean),
         ]
       );
     }
@@ -460,28 +469,7 @@ async function persistToPostgres() {
       );
     }
 
-    for (const l of db.lessons) {
-      const language = String(l.language || '').toUpperCase() === 'GLOBAL'
-        ? 'GLOBAL'
-        : (normalizeLanguage(l.language) || 'ru');
-      await client.query(
-        `INSERT INTO lessons (
-           id, teacher_id, language, section, title, file_key, file_path, mime_type, created_at, data
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)`,
-        [
-          l.id,
-          l.teacherId,
-          language,
-          l.section || 'VIDEO',
-          l.title || '',
-          l.fileKey || null,
-          l.filePath || null,
-          l.mimeType || null,
-          l.createdAt || nowIso(),
-          JSON.stringify(l),
-        ]
-      );
-    }
+    // lessons intentionally not bulk-rewritten here
 
     await client.query('COMMIT');
   } catch (err) {
@@ -609,6 +597,50 @@ function getStorageMode() {
   return storageMode;
 }
 
+function leanWithoutMedia(obj) {
+  if (!obj || typeof obj !== 'object') return obj;
+  const copy = { ...obj };
+  delete copy.mediaBase64;
+  return copy;
+}
+
+async function upsertLessonPg(lesson) {
+  if (!usePostgres() || !lesson?.id) return;
+  const language = String(lesson.language || '').toUpperCase() === 'GLOBAL'
+    ? 'GLOBAL'
+    : (normalizeLanguage(lesson.language) || 'ru');
+  await pg.query(
+    `INSERT INTO lessons (
+       id, teacher_id, language, section, title, file_key, file_path, mime_type,
+       media_base64, created_at, data
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)
+     ON CONFLICT (id) DO UPDATE SET
+       teacher_id = EXCLUDED.teacher_id,
+       language = EXCLUDED.language,
+       section = EXCLUDED.section,
+       title = EXCLUDED.title,
+       file_key = EXCLUDED.file_key,
+       file_path = EXCLUDED.file_path,
+       mime_type = EXCLUDED.mime_type,
+       media_base64 = EXCLUDED.media_base64,
+       data = EXCLUDED.data,
+       updated_at = now()`,
+    [
+      lesson.id,
+      lesson.teacherId,
+      language,
+      lesson.section || 'VIDEO',
+      lesson.title || '',
+      lesson.fileKey || null,
+      lesson.filePath || null,
+      lesson.mimeType || null,
+      lesson.mediaBase64 || null,
+      lesson.createdAt || nowIso(),
+      JSON.stringify(leanWithoutMedia(lesson)),
+    ]
+  );
+}
+
 module.exports = {
   DATA_DIR,
   SEEDS_DIR,
@@ -627,5 +659,6 @@ module.exports = {
   currentTeacherCode,
   getStorageMode,
   usePostgres,
+  upsertLessonPg,
   TEACHER_CODE: null,
 };
