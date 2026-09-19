@@ -384,12 +384,19 @@ async function persistToPostgres() {
       await client.query('DELETE FROM auth_sessions');
       await client.query('DELETE FROM users');
 
-      for (const u of db.users) {
+      const usersOrdered = [
+        ...db.users.filter((u) => u && u.role === 'TEACHER'),
+        ...db.users.filter((u) => u && u.role !== 'TEACHER'),
+      ];
+      for (const u of usersOrdered) {
         if (!u || !u.id || !u.role || !u.name) {
           console.warn('Skipping invalid user row during persist');
           continue;
         }
         const language = u.role === 'STUDENT' ? (normalizeLanguage(u.language) || 'ru') : null;
+        // Ensure teacher_id points to an existing teacher in this batch
+        let teacherId = u.teacherId || null;
+        if (teacherId && !usersOrdered.some((x) => x.id === teacherId)) teacherId = null;
         await client.query(
           `INSERT INTO users (
              id, role, name, code, password_hash, group_name, teacher_id, language, enrollment_level,
@@ -402,7 +409,7 @@ async function persistToPostgres() {
             u.code || null,
             u.passwordHash || null,
             u.groupName || null,
-            u.teacherId || null,
+            teacherId,
             language,
             u.enrollmentLevel || null,
             u.createdAt || nowIso(),
