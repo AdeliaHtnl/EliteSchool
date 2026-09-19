@@ -427,6 +427,52 @@ async function persistToPostgres() {
         );
       }
 
+      // lessons.teacher_id FK is ON DELETE CASCADE — DELETE users wiped all lessons.
+      // Re-upsert every in-memory lesson after users are restored.
+      const lessonIds = (db.lessons || []).map((l) => l && l.id).filter(Boolean);
+      if (lessonIds.length) {
+        await client.query(
+          `DELETE FROM lessons WHERE NOT (id = ANY($1::text[]))`,
+          [lessonIds]
+        );
+      }
+      for (const lesson of db.lessons || []) {
+        if (!lesson || !lesson.id) continue;
+        const language = String(lesson.language || '').toUpperCase() === 'GLOBAL'
+          ? 'GLOBAL'
+          : (normalizeLanguage(lesson.language) || 'ru');
+        await client.query(
+          `INSERT INTO lessons (
+             id, teacher_id, language, section, title, file_key, file_path, mime_type,
+             media_base64, created_at, data
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)
+           ON CONFLICT (id) DO UPDATE SET
+             teacher_id = EXCLUDED.teacher_id,
+             language = EXCLUDED.language,
+             section = EXCLUDED.section,
+             title = EXCLUDED.title,
+             file_key = EXCLUDED.file_key,
+             file_path = EXCLUDED.file_path,
+             mime_type = EXCLUDED.mime_type,
+             media_base64 = COALESCE(EXCLUDED.media_base64, lessons.media_base64),
+             data = EXCLUDED.data,
+             updated_at = now()`,
+          [
+            lesson.id,
+            lesson.teacherId,
+            language,
+            lesson.section || 'VIDEO',
+            lesson.title || '',
+            lesson.fileKey || null,
+            lesson.filePath || null,
+            lesson.mimeType || null,
+            lesson.mediaBase64 || null,
+            lesson.createdAt || nowIso(),
+            JSON.stringify(leanWithoutMedia(lesson)),
+          ]
+        );
+      }
+
       for (const a of db.assignments) {
         await client.query(
           `INSERT INTO assignments (id, teacher_id, language, status, title, created_at, data)
