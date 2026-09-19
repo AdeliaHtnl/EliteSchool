@@ -31,6 +31,9 @@ function getS3() {
       accessKeyId: String(process.env.R2_ACCESS_KEY_ID).trim(),
       secretAccessKey: String(process.env.R2_SECRET_ACCESS_KEY).trim(),
     },
+    // Avoid x-amz-checksum-mode on signed GETs — breaks <video src> in browsers
+    requestChecksumCalculation: 'WHEN_REQUIRED',
+    responseChecksumValidation: 'WHEN_REQUIRED',
   });
   return s3;
 }
@@ -201,17 +204,43 @@ async function abortMultipartUpload({ key, uploadId }) {
   } catch (_) { /* ignore */ }
 }
 
-/** Short-lived signed GET for private buckets (or when R2_PUBLIC_URL unset). */
-async function signedGetUrl(key, expiresIn = 3600) {
+/** Short-lived signed GET for private buckets. Prefer signing so browser <video> can play without R2 CORS. */
+async function signedGetUrl(key, expiresIn = 3600, { preferPublic = false } = {}) {
   if (!r2Configured() || !key) return null;
-  const pub = publicUrlForKey(key);
-  if (pub) return pub;
+  if (preferPublic) {
+    const pub = publicUrlForKey(key);
+    if (pub) return pub;
+  }
   const { GetObjectCommand } = require('@aws-sdk/client-s3');
   const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
   return getSignedUrl(getS3(), new GetObjectCommand({
     Bucket: bucket(),
     Key: key,
   }), { expiresIn });
+}
+
+/** Stream object body to an Express response (no full buffer). */
+async function streamObject(key, res, { contentType, contentDisposition } = {}) {
+  if (!r2Configured() || !key) return false;
+  const { GetObjectCommand } = require('@aws-sdk/client-s3');
+  const out = await getS3().send(new GetObjectCommand({
+    Bucket: bucket(),
+    Key: key,
+  }));
+  if (contentType || out.ContentType) {
+    res.setHeader('Content-Type', contentType || out.ContentType || 'application/octet-stream');
+  }
+  if (contentDisposition) res.setHeader('Content-Disposition', contentDisposition);
+  if (out.ContentLength != null) res.setHeader('Content-Length', String(out.ContentLength));
+  res.setHeader('Cache-Control', 'private, max-age=60');
+  if (out.Body && typeof out.Body.pipe === 'function') {
+    out.Body.pipe(res);
+    return true;
+  }
+  const chunks = [];
+  for await (const chunk of out.Body) chunks.push(chunk);
+  res.send(Buffer.concat(chunks));
+  return true;
 }
 
 async function getObject(key) {
@@ -268,5 +297,6 @@ module.exports = {
   completeMultipartUpload,
   abortMultipartUpload,
   signedGetUrl,
+  streamObject,
   MULTIPART_PART_SIZE,
 };

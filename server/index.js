@@ -1160,16 +1160,25 @@ app.get('/api/retellings/:id/media', requireAuth, async (req, res) => {
     if (user.role === 'TEACHER' && !teacherOwnsStudent(user, student)) {
       return res.status(403).json({ error: 'Нет доступа к этой записи.' });
     }
-    if (r.mediaUrl && String(r.mediaUrl).startsWith('http')) {
-      return res.redirect(302, r.mediaUrl);
-    }
     if (r.mediaKey && r2.r2Configured()) {
-      const obj = await r2.getObject(r.mediaKey);
-      if (!obj) return res.status(404).json({ error: 'Файл записи отсутствует.' });
-      res.setHeader('Content-Type', r.mimeType || obj.mimeType || 'application/octet-stream');
-      res.setHeader('Content-Disposition', 'inline');
-      res.setHeader('Cache-Control', 'private, max-age=60');
-      return res.send(obj.buffer);
+      const wantUrl = String(req.query.alt || '') === 'url'
+        || String(req.headers.accept || '').includes('application/json');
+      if (wantUrl) {
+        const signed = await r2.signedGetUrl(r.mediaKey, 3600);
+        if (signed) return res.json({ url: signed });
+      }
+      const ok = await r2.streamObject(r.mediaKey, res, {
+        contentType: r.mimeType || undefined,
+        contentDisposition: 'inline',
+      });
+      if (ok) return undefined;
+      return res.status(404).json({ error: 'Файл записи отсутствует.' });
+    }
+    if (r.mediaUrl && String(r.mediaUrl).startsWith('http')) {
+      const wantUrl = String(req.query.alt || '') === 'url'
+        || String(req.headers.accept || '').includes('application/json');
+      if (wantUrl) return res.json({ url: r.mediaUrl });
+      return res.redirect(302, r.mediaUrl);
     }
     if (r.mediaPath) {
       const filePath = path.join(db.UPLOADS_DIR, path.basename(r.mediaPath));
@@ -2565,41 +2574,57 @@ app.get('/api/lessons/:id/file', requireAuth, async (req, res) => {
     if (!lesson || !lessonVisibleTo(lesson, req.auth.user)) {
       return res.status(404).json({ error: 'Файл не найден.' });
     }
-    if (lesson.mediaUrl && String(lesson.mediaUrl).startsWith('http')) {
-      return res.redirect(302, lesson.mediaUrl);
+    const inline = String(lesson.mimeType || '').includes('pdf') || String(lesson.mimeType || '').startsWith('video/');
+    const disposition = `${inline ? 'inline' : 'attachment'}; filename="${encodeURIComponent(lesson.originalName || 'file')}"`;
+    const wantUrl = String(req.query.alt || '') === 'url'
+      || String(req.headers.accept || '').includes('application/json');
+
+    // Browser players: return signed R2 URL (no CORS needed for <video src>).
+    // Never 302-redirect for fetch+blob — that hits R2 CORS and becomes "Failed to fetch".
+    if (wantUrl) {
+      if (lesson.fileKey && r2.r2Configured()) {
+        const signed = await r2.signedGetUrl(lesson.fileKey, 3600);
+        if (signed) return res.json({ url: signed });
+      }
+      if (lesson.mediaUrl && String(lesson.mediaUrl).startsWith('http')) {
+        return res.json({ url: lesson.mediaUrl });
+      }
+      // Local/base64: client must stream via same endpoint with cookies
+      return res.json({ url: null, stream: true });
     }
+
     if (lesson.fileKey && r2.r2Configured()) {
-      // Stream large videos from R2 via signed URL — do not buffer through Render
-      const signed = await r2.signedGetUrl(lesson.fileKey, 3600);
-      if (signed) return res.redirect(302, signed);
-      const obj = await r2.getObject(lesson.fileKey);
-      if (!obj) return res.status(404).json({ error: 'Файл не найден.' });
-      const inline = String(lesson.mimeType || '').includes('pdf') || String(lesson.mimeType || '').startsWith('video/');
-      res.setHeader('Content-Type', lesson.mimeType || obj.mimeType || 'application/octet-stream');
-      res.setHeader('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename="${encodeURIComponent(lesson.originalName || 'file')}"`);
-      return res.send(obj.buffer);
+      const ok = await r2.streamObject(lesson.fileKey, res, {
+        contentType: lesson.mimeType || undefined,
+        contentDisposition: disposition,
+      });
+      if (ok) return undefined;
+      return res.status(404).json({ error: 'Файл не найден.' });
+    }
+    if (lesson.mediaUrl && String(lesson.mediaUrl).startsWith('http') && !r2.r2Configured()) {
+      return res.redirect(302, lesson.mediaUrl);
     }
     if (lesson.filePath) {
       const filePath = path.join(db.LESSONS_DIR, path.basename(lesson.filePath));
       if (fs.existsSync(filePath)) {
-        const inline = String(lesson.mimeType || '').includes('pdf') || String(lesson.mimeType || '').startsWith('video/');
         res.setHeader('Content-Type', lesson.mimeType || 'application/octet-stream');
-        res.setHeader('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename="${encodeURIComponent(lesson.originalName || 'file')}"`);
+        res.setHeader('Content-Disposition', disposition);
         return res.sendFile(filePath);
       }
     }
     if (lesson.mediaBase64) {
       const buf = Buffer.from(lesson.mediaBase64, 'base64');
-      const inline = String(lesson.mimeType || '').includes('pdf') || String(lesson.mimeType || '').startsWith('video/');
       res.setHeader('Content-Type', lesson.mimeType || 'application/octet-stream');
-      res.setHeader('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename="${encodeURIComponent(lesson.originalName || 'file')}"`);
+      res.setHeader('Content-Disposition', disposition);
       res.setHeader('Content-Length', buf.length);
       return res.send(buf);
     }
     return res.status(404).json({ error: 'К этому уроку файл не приложен или потерян после деплоя.' });
   } catch (err) {
     console.error('lesson file failed:', err.message);
-    return res.status(500).json({ error: 'Не удалось отдать файл.' });
+    if (!res.headersSent) {
+      return res.status(500).json({ error: 'Не удалось отдать файл.' });
+    }
   }
 });
 

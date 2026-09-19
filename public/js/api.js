@@ -52,9 +52,25 @@ export function lessonFileUrl(id) {
   return apiUrl(`/api/lessons/${encodeURIComponent(id)}/file`);
 }
 
-/** Load auth-protected media via fetch+blob (video/audio src cannot send cookies cross-origin reliably). */
+/** Resolve a playable media URL (signed R2) or blob URL for auth-protected files. */
 export async function authMediaObjectUrl(pathOrUrl) {
   const url = pathOrUrl.startsWith('http') ? pathOrUrl : apiUrl(pathOrUrl);
+  const join = url.includes('?') ? '&' : '?';
+
+  // Prefer signed/direct URL — <video>/<audio>/<iframe> can play cross-origin without CORS.
+  try {
+    const metaRes = await fetch(`${url}${join}alt=url`, {
+      credentials: 'include',
+      headers: { Accept: 'application/json' },
+    });
+    if (metaRes.ok) {
+      const meta = await metaRes.json().catch(() => ({}));
+      if (meta?.url && /^https?:\/\//i.test(meta.url)) {
+        return meta.url;
+      }
+    }
+  } catch (_) { /* fall through to blob stream */ }
+
   const res = await fetch(url, { credentials: 'include' });
   if (!res.ok) {
     let msg = 'Не удалось загрузить медиа.';
@@ -64,6 +80,15 @@ export async function authMediaObjectUrl(pathOrUrl) {
     } catch (_) {}
     const err = new Error(msg);
     err.status = res.status;
+    throw err;
+  }
+  // If API still redirects to R2, reading the body fails CORS — surface a clear error.
+  const finalHost = (() => {
+    try { return new URL(res.url).hostname; } catch { return ''; }
+  })();
+  if (/r2\.cloudflarestorage\.com$|\.r2\.dev$/i.test(finalHost)) {
+    const err = new Error('Медиа недоступно (CORS R2). Обновите API.');
+    err.status = 0;
     throw err;
   }
   const blob = await res.blob();
