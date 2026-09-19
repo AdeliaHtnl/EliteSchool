@@ -277,7 +277,7 @@ export function viewTeacherLogin() {
         <p class="sub">Введите код учителя, который вам выдали.</p>
         <form data-form="teacher-login">
           <div class="form-error" data-error hidden></div>
-          <div class="field"><label>Код учителя</label><input name="code" type="text" autocomplete="username" placeholder="elite.mugalim35" required></div>
+          <div class="field"><label>Код учителя</label><input name="code" type="text" autocomplete="username" placeholder="Введите код" required></div>
           <button type="submit" class="btn btn-primary btn-block">Войти в панель</button>
         </form>
         <div class="auth-switch">Вы ученик? <a href="#student-login">Войти как ученик</a></div>
