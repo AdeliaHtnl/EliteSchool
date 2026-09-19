@@ -19,7 +19,9 @@ const serviceId = svc.id;
 if (!serviceId) throw new Error('Missing service id in .render-service.json');
 
 const cliYaml = fs.readFileSync(path.join(process.env.USERPROFILE || process.env.HOME, '.render', 'cli.yaml'), 'utf8');
-const tokenMatch = cliYaml.match(/apiToken:\s*(\S+)/i) || cliYaml.match(/token:\s*(\S+)/i);
+const tokenMatch = cliYaml.match(/^\s*key:\s*(\S+)/m)
+  || cliYaml.match(/apiToken:\s*(\S+)/i)
+  || cliYaml.match(/token:\s*(\S+)/i);
 if (!tokenMatch) throw new Error('No Render CLI token found — run render login');
 const token = tokenMatch[1].replace(/['"]/g, '');
 

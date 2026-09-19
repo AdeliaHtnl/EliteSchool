@@ -2680,6 +2680,42 @@ app.post('/api/lessons/upload/sign-part', requireAuth, requireRole('TEACHER'), a
   }
 });
 
+/** Proxy multipart part through API → R2 (no bucket CORS required). */
+const partRawLimit = `${Math.ceil(limits.MULTIPART_PART_SIZE / (1024 * 1024)) + 2}mb`;
+app.put(
+  '/api/lessons/upload/part',
+  requireAuth,
+  requireRole('TEACHER'),
+  express.raw({ type: '*/*', limit: partRawLimit }),
+  async (req, res) => {
+    try {
+      prunePendingR2();
+      const uploadId = String(req.query.uploadId || '');
+      const key = String(req.query.key || '');
+      const partNumber = Number(req.query.partNumber);
+      const session = pendingR2Uploads.get(uploadId);
+      if (!session || session.teacherId !== req.auth.user.id || session.key !== key) {
+        return res.status(403).json({ error: 'Сессия загрузки не найдена или истекла.' });
+      }
+      if (!Number.isInteger(partNumber) || partNumber < 1 || partNumber > 10000) {
+        return res.status(400).json({ error: 'Некорректный номер части.' });
+      }
+      const body = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body || []);
+      if (!body.length) {
+        return res.status(400).json({ error: 'Пустая часть файла.' });
+      }
+      if (body.length > limits.MULTIPART_PART_SIZE + 1024 * 1024) {
+        return res.status(400).json({ error: 'Часть файла слишком большая.' });
+      }
+      const out = await r2.uploadPartBuffer({ key, uploadId, partNumber, body });
+      res.json({ etag: out.etag, partNumber: out.partNumber });
+    } catch (err) {
+      console.error('upload part failed:', err.message);
+      res.status(err.status || 500).json({ error: err.message || 'Не удалось загрузить часть.' });
+    }
+  }
+);
+
 app.post('/api/lessons/upload/complete', requireAuth, requireRole('TEACHER'), async (req, res) => {
   try {
     const b = req.body || {};

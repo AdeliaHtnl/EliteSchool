@@ -1,7 +1,8 @@
 /**
- * Direct-to-R2 multipart video upload with progress UI.
+ * Multipart video upload via API → R2 (avoids browser CORS on the bucket).
  */
 import { api } from './api.js';
+import { apiUrl } from './config.js';
 
 export function formatBytes(n) {
   const v = Number(n) || 0;
@@ -75,22 +76,30 @@ export async function uploadFileToR2(file, {
       const end = Math.min(start + partSize, file.size);
       const blob = file.slice(start, end);
 
-      const { url } = await api('/api/lessons/upload/sign-part', {
-        method: 'POST',
-        body: { uploadId: init.uploadId, key: init.key, partNumber },
+      const qs = new URLSearchParams({
+        uploadId: init.uploadId,
+        key: init.key,
+        partNumber: String(partNumber),
       });
-
-      const putRes = await fetch(url, {
-        method: 'PUT',
-        body: blob,
-        headers: { 'Content-Type': file.type || 'application/octet-stream' },
-        signal,
-      });
-      if (!putRes.ok) {
-        throw new Error(`Ошибка загрузки части ${partNumber} (${putRes.status}).`);
+      let putRes;
+      try {
+        putRes = await fetch(`${apiUrl('/api/lessons/upload/part')}?${qs}`, {
+          method: 'PUT',
+          body: blob,
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/octet-stream' },
+          signal,
+        });
+      } catch (_) {
+        throw new Error('Нет соединения с сервером при загрузке части.');
       }
-      const etag = putRes.headers.get('etag') || putRes.headers.get('ETag');
-      if (!etag) throw new Error('R2 не вернул ETag. Проверьте CORS bucket.');
+      let data = {};
+      try { data = await putRes.json(); } catch (_) { data = {}; }
+      if (!putRes.ok) {
+        throw new Error(data.error || `Ошибка загрузки части ${partNumber} (${putRes.status}).`);
+      }
+      const etag = String(data.etag || '').replace(/^"|"$/g, '');
+      if (!etag) throw new Error('Сервер не вернул ETag части.');
       parts.push({ ETag: etag, PartNumber: partNumber });
 
       uploaded = end;

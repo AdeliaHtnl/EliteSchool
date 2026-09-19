@@ -1359,13 +1359,13 @@ export function viewTeacherVideoCreate(lang = 'ru') {
           <div class="field"><label>${isEn ? 'Duration' : 'Длительность'}</label><input name="duration" type="text" placeholder="6:12"></div>
           <div class="field"><label>YouTube</label><input name="videoUrl" type="url" placeholder="https://youtu.be/…"></div>
           <div class="field span-2">
-            <label>${isEn ? 'Or upload video (up to 5 GB via Cloudflare R2)' : 'Или загрузите видео (до 5 ГБ через Cloudflare R2)'}</label>
+            <label>${isEn ? 'Or upload video (up to 5 GB, stored in Cloudflare R2)' : 'Или загрузите видео (до 5 ГБ, хранение в Cloudflare R2)'}</label>
             ${renderUploadCard({ maxLabel: '5 GB', name: 'file' })}
           </div>
         </div>
         <p class="section-sub">${isEn
-          ? 'Large videos upload directly to Cloudflare R2 (not Render disk). YouTube links also work.'
-          : 'Большие видео загружаются напрямую в Cloudflare R2 (не на диск Render). Можно и ссылку YouTube.'}</p>
+          ? 'Large videos go to Cloudflare R2 via the API (not kept on Render disk). YouTube links also work.'
+          : 'Большие видео уходят в Cloudflare R2 через API (не остаются на диске Render). Можно и ссылку YouTube.'}</p>
         <button type="submit" class="btn btn-primary btn-block" style="margin-top:8px;">${ic('plus', 16)} ${isEn ? 'Publish lesson' : 'Опубликовать урок'}</button>
       </form>
     </div>

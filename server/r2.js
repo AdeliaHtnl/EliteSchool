@@ -130,6 +130,30 @@ async function signUploadPart({ key, uploadId, partNumber, expiresIn = 3600 }) {
   return { url, partNumber };
 }
 
+/** Server-side UploadPart (avoids browser→R2 CORS when bucket CORS is unset). */
+async function uploadPartBuffer({ key, uploadId, partNumber, body }) {
+  if (!r2Configured()) {
+    const err = new Error('R2 is not configured');
+    err.status = 503;
+    throw err;
+  }
+  const { UploadPartCommand } = require('@aws-sdk/client-s3');
+  const out = await getS3().send(new UploadPartCommand({
+    Bucket: bucket(),
+    Key: key,
+    UploadId: uploadId,
+    PartNumber: partNumber,
+    Body: body,
+  }));
+  const etag = String(out.ETag || '').replace(/^"|"$/g, '');
+  if (!etag) {
+    const err = new Error('R2 не вернул ETag для части файла.');
+    err.status = 502;
+    throw err;
+  }
+  return { etag, partNumber };
+}
+
 async function completeMultipartUpload({ key, uploadId, parts }) {
   if (!r2Configured()) {
     const err = new Error('R2 is not configured');
@@ -240,6 +264,7 @@ module.exports = {
   writeLocal,
   createMultipartUpload,
   signUploadPart,
+  uploadPartBuffer,
   completeMultipartUpload,
   abortMultipartUpload,
   signedGetUrl,
