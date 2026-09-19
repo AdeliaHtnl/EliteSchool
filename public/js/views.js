@@ -277,7 +277,7 @@ export function viewTeacherLogin() {
         <p class="sub">Введите код учителя, который вам выдали.</p>
         <form data-form="teacher-login">
           <div class="form-error" data-error hidden></div>
-          <div class="field"><label>Код учителя</label><input name="code" type="text" autocomplete="username" placeholder="Введите код" required></div>
+          <div class="field"><label>Код учителя</label><input name="code" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" required></div>
           <button type="submit" class="btn btn-primary btn-block">Войти в панель</button>
         </form>
         <div class="auth-switch">Вы ученик? <a href="#student-login">Войти как ученик</a></div>
@@ -930,7 +930,12 @@ export function viewTeacherStudents(students, filter = 'all') {
           <td>${s.pendingCount}</td>
           <td>${s.avgScore ?? '—'}</td>
           <td><span class="status-dot ${s.inReviewCount ? 'progress' : s.pendingCount ? 'pending' : 'done'}"></span>${esc(relativeDate(s.lastActiveAt))}</td>
-          <td><a href="#teacher-student-detail/${esc(s.id)}" class="btn btn-ghost btn-sm">Открыть</a></td>
+          <td>
+            <div style="display:flex; gap:6px; justify-content:flex-end; flex-wrap:wrap;">
+              <a href="#teacher-student-detail/${esc(s.id)}" class="btn btn-ghost btn-sm">Открыть</a>
+              <button type="button" class="btn btn-ghost btn-sm" data-action="delete-student" data-id="${esc(s.id)}" data-name="${esc(s.name)}" style="color:var(--red);">Удалить</button>
+            </div>
+          </td>
         </tr>`;
         }).join('')}</tbody>
       </table></div>
@@ -950,7 +955,10 @@ export function viewTeacherStudents(students, filter = 'all') {
             <div><dt>Не сдано</dt><dd>${s.pendingCount}</dd></div>
             <div><dt>Средняя оценка</dt><dd>${s.avgScore ?? '—'}</dd></div>
           </dl>
-          <a href="#teacher-student-detail/${esc(s.id)}" class="btn btn-primary">Открыть профиль</a>
+          <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            <a href="#teacher-student-detail/${esc(s.id)}" class="btn btn-primary" style="flex:1;">Открыть профиль</a>
+            <button type="button" class="btn btn-ghost" data-action="delete-student" data-id="${esc(s.id)}" data-name="${esc(s.name)}" style="color:var(--red);">Удалить</button>
+          </div>
         </article>`;
       }).join('')}</div>` : emptyState('Никого не найдено', 'Измените фильтр.')}
     </div>
@@ -966,9 +974,13 @@ export function viewTeacherStudentDetail(payload) {
       <div class="card card-lg">
         <div style="display:flex; align-items:center; gap:16px; margin-bottom:18px;">
           <div class="avatar" style="width:56px;height:56px;font-size:17px;">${esc(initials(s.name))}</div>
-          <div><p class="section-title" style="margin-bottom:2px;">${esc(s.name)}</p><p class="section-sub" style="margin:0;">Language: ${esc(langLabel(s.language))} · ${s.completedCount ? esc(s.level) : 'Ученик'}</p></div>
+          <div style="flex:1; min-width:0;">
+            <p class="section-title" style="margin-bottom:2px;">${esc(s.name)}</p>
+            <p class="section-sub" style="margin:0;">Language: ${esc(langLabel(s.language))} · ${s.completedCount ? esc(s.level) : 'Ученик'}</p>
+          </div>
         </div>
         ${s.completedCount ? skillRows(s.criteria) : '<p class="section-sub">Оценки появятся после проверки пересказов.</p>'}
+        <button type="button" class="btn btn-ghost" data-action="delete-student" data-id="${esc(s.id)}" data-name="${esc(s.name)}" data-back="teacher-students" style="margin-top:18px; color:var(--red);">Удалить ученика</button>
       </div>
       <div class="card card-lg">
         <p class="section-title">Сводка</p>

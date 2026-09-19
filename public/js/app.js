@@ -835,6 +835,27 @@ root.addEventListener('click', async (e) => {
     return;
   }
 
+  const delStudent = e.target.closest('[data-action="delete-student"]');
+  if (delStudent) {
+    e.preventDefault();
+    if (delStudent.dataset.busy === '1') return;
+    const who = delStudent.dataset.name || 'ученика';
+    if (!window.confirm(`Удалить ${who}? Пересказы, тесты и сессии этого ученика тоже будут удалены.`)) return;
+    delStudent.dataset.busy = '1';
+    delStudent.disabled = true;
+    try {
+      await api(`/api/teacher/students/${encodeURIComponent(delStudent.dataset.id)}`, { method: 'DELETE' });
+      toast('Ученик удалён.');
+      if (delStudent.dataset.back) nav(delStudent.dataset.back);
+      else await render();
+    } catch (err) {
+      toast(err.message, 'err');
+      delStudent.disabled = false;
+      delete delStudent.dataset.busy;
+    }
+    return;
+  }
+
   const storyMove = e.target.closest('[data-action="story-move"]');
   if (storyMove) {
     const item = storyMove.closest('[data-story-item]');

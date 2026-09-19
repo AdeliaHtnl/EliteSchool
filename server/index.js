@@ -1792,6 +1792,58 @@ app.get('/api/teacher/students/:id', requireAuth, requireRole('TEACHER'), (req, 
   });
 });
 
+app.delete('/api/teacher/students/:id', requireAuth, requireRole('TEACHER'), async (req, res) => {
+  try {
+    const teacher = req.auth.user;
+    const studentId = String(req.params.id || '');
+    const student = store().users.find((u) => u.id === studentId);
+    if (!student || !teacherOwnsStudent(teacher, student)) {
+      return res.status(403).json({ error: 'Нет доступа к этому ученику.' });
+    }
+
+    const retellings = store().retellings.filter((r) => r.studentId === studentId);
+    for (const r of retellings) {
+      if (r.mediaKey && r2.r2Configured()) {
+        try { await r2.deleteObject(r.mediaKey); } catch (_) { /* ignore */ }
+      }
+      if (r.mediaPath) {
+        const filePath = path.join(db.UPLOADS_DIR, path.basename(r.mediaPath));
+        try { fs.unlinkSync(filePath); } catch (_) { /* ignore */ }
+      }
+    }
+
+    store().retellings = store().retellings.filter((r) => r.studentId !== studentId);
+    store().flowSessions = store().flowSessions.filter((f) => f.studentId !== studentId);
+    store().assignmentStudents = store().assignmentStudents.filter((x) => x.studentId !== studentId);
+    store().literacyAttempts = (store().literacyAttempts || []).filter((a) => a.studentId !== studentId);
+    store().notifications = (store().notifications || []).filter((n) => n.userId !== studentId);
+    store().authSessions = (store().authSessions || []).filter((s) => s.userId !== studentId);
+    store().users = store().users.filter((u) => u.id !== studentId);
+
+    // Remove from lesson assignment lists (JSON field, not FK)
+    const touchedLessons = [];
+    for (const lesson of store().lessons || []) {
+      if (!Array.isArray(lesson.studentIds) || !lesson.studentIds.includes(studentId)) continue;
+      lesson.studentIds = lesson.studentIds.filter((id) => id !== studentId);
+      touchedLessons.push(lesson);
+    }
+
+    if (pg.hasDatabaseUrl()) {
+      await pg.query('DELETE FROM users WHERE id = $1 AND role = $2', [studentId, 'STUDENT']);
+      for (const lesson of touchedLessons) {
+        try { await db.upsertLessonPg(lesson); } catch (_) { /* ignore */ }
+      }
+    } else {
+      await save();
+    }
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('student delete failed:', err.message);
+    res.status(500).json({ error: err.message || 'Не удалось удалить ученика.' });
+  }
+});
+
 function trackBundle(teacherId, lang) {
   const language = parseLang(lang);
   const students = studentsOfTeacher(teacherId, { language });
