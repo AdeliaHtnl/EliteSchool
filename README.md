@@ -88,9 +88,25 @@ All fetches go through [`public/js/config.js`](public/js/config.js) + [`public/j
 
 ### Cloudflare R2
 
-- Create bucket + API token
+- Create bucket + API token with Object Read & Write
 - Set `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, `R2_PUBLIC_URL`
-- Object keys: `retellings/<uuid>.ext`, `lessons/<uuid>.ext`
+- **CORS on the bucket** (required for browser multipart PUT):
+
+```json
+[
+  {
+    "AllowedOrigins": ["https://YOUR-VERCEL-APP.vercel.app", "http://localhost:3000"],
+    "AllowedMethods": ["GET", "PUT", "HEAD"],
+    "AllowedHeaders": ["*"],
+    "ExposeHeaders": ["ETag"],
+    "MaxAgeSeconds": 3600
+  }
+]
+```
+
+- Lesson videos: browser → presigned multipart → R2 (up to `MAX_VIDEO_SIZE_MB`, default **5120 = 5 GB**)
+- Render never stores 5 GB files on local disk
+- Object keys: `lessons/<uuid>.ext`, `retellings/<uuid>.ext`
 
 ## Cookies / CORS
 

@@ -227,6 +227,52 @@ function assert(cond, msg) {
   assert(r.status === 200, 'EN assignments list');
   assert((r.data.assignments || []).every((a) => !a.language || a.language === 'en'), '14. EN assignments only');
 
+  // --- Public config / upload auth ---
+  r = await req('/api/config/public');
+  assert(r.status === 200 && r.data.maxVideoSizeMb >= 5120, '5. max video size is 5 GB (5120 MB)');
+  assert(typeof r.data.r2Enabled === 'boolean', 'config exposes r2Enabled');
+  assert(!JSON.stringify(r.data).includes('SECRET'), '14. public config has no secrets');
+
+  r = await req('/api/lessons/upload/init', {
+    method: 'POST',
+    body: { filename: 'x.mp4', mimeType: 'video/mp4', size: 1024 },
+  });
+  assert(r.status === 401, '7. upload init requires auth');
+
+  r = await req('/api/lessons/upload/init', {
+    method: 'POST',
+    cookie: ruCookie,
+    body: { filename: 'x.mp4', mimeType: 'video/mp4', size: 1024 },
+  });
+  assert(r.status === 403, 'upload init blocked for students');
+
+  r = await req('/api/lessons/upload/init', {
+    method: 'POST',
+    cookie: teacherCookie,
+    body: { filename: 'malware.exe', mimeType: 'application/octet-stream', size: 1024 },
+  });
+  assert(r.status === 400, '6. dangerous extension rejected');
+
+  r = await req('/api/lessons/upload/init', {
+    method: 'POST',
+    cookie: teacherCookie,
+    body: { filename: 'huge.mp4', mimeType: 'video/mp4', size: 6 * 1024 * 1024 * 1024 },
+  });
+  assert(r.status === 400, '5b. over 5 GB rejected');
+
+  r = await req('/api/lessons/upload/init', {
+    method: 'POST',
+    cookie: teacherCookie,
+    body: { filename: 'ok.mp4', mimeType: 'video/mp4', size: 1024 },
+  });
+  assert(
+    r.status === 200 || r.status === 503,
+    'upload init for teacher (200 with R2, 503 without)'
+  );
+  if (r.status === 200) {
+    assert(r.data.uploadId && r.data.key && !String(r.data.key).includes('uploads/'), '8. R2 key not local uploads path');
+  }
+
   console.log('\nAll security-smoke checks passed.');
 })().catch((err) => {
   console.error(err.message || err);

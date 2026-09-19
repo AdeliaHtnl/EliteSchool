@@ -1,11 +1,12 @@
 /**
  * Cloudflare R2 (S3-compatible) media storage.
- * When R2_* env is incomplete, falls back to local disk helpers.
+ * Large videos use multipart + presigned URLs (browser → R2 direct).
  */
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { isProduction } = require('./env');
+const { MULTIPART_PART_SIZE, mimeBase } = require('./limits');
 
 let s3 = null;
 
@@ -21,7 +22,6 @@ function r2Configured() {
 function getS3() {
   if (!r2Configured()) return null;
   if (s3) return s3;
-  // Lazy require so local JSON-only boot works without the package until installed
   const { S3Client } = require('@aws-sdk/client-s3');
   const accountId = String(process.env.R2_ACCOUNT_ID).trim();
   s3 = new S3Client({
@@ -35,10 +35,14 @@ function getS3() {
   return s3;
 }
 
+function bucket() {
+  return String(process.env.R2_BUCKET || '').trim();
+}
+
 function publicUrlForKey(key) {
   const base = String(process.env.R2_PUBLIC_URL || '').replace(/\/$/, '');
-  if (!base) return null;
-  return `${base}/${key.replace(/^\//, '')}`;
+  if (!base || !key) return null;
+  return `${base}/${String(key).replace(/^\//, '')}`;
 }
 
 function safeExt(originalName, mimeType, fallback = '.bin') {
@@ -52,8 +56,11 @@ function safeExt(originalName, mimeType, fallback = '.bin') {
     'audio/mp4': '.m4a',
     'audio/mpeg': '.mp3',
     'video/quicktime': '.mov',
+    'video/x-matroska': '.mkv',
+    'video/avi': '.avi',
+    'video/x-msvideo': '.avi',
   };
-  return map[String(mimeType || '').split(';')[0].trim()] || fallback;
+  return map[mimeBase(mimeType)] || fallback;
 }
 
 function makeObjectKey(type, originalName, mimeType) {
@@ -65,14 +72,14 @@ function makeObjectKey(type, originalName, mimeType) {
 async function uploadBuffer({ buffer, contentType, type, originalName }) {
   if (!r2Configured()) {
     const err = new Error('R2 is not configured');
-    err.status = 500;
+    err.status = 503;
     throw err;
   }
   const { PutObjectCommand } = require('@aws-sdk/client-s3');
   const key = makeObjectKey(type, originalName, contentType);
   const client = getS3();
   await client.send(new PutObjectCommand({
-    Bucket: process.env.R2_BUCKET,
+    Bucket: bucket(),
     Key: key,
     Body: buffer,
     ContentType: contentType || 'application/octet-stream',
@@ -85,12 +92,110 @@ async function uploadBuffer({ buffer, contentType, type, originalName }) {
   };
 }
 
+async function createMultipartUpload({ type, originalName, contentType }) {
+  if (!r2Configured()) {
+    const err = new Error('Cloudflare R2 не настроен. Добавьте R2_* в переменные окружения Render.');
+    err.status = 503;
+    throw err;
+  }
+  const { CreateMultipartUploadCommand } = require('@aws-sdk/client-s3');
+  const key = makeObjectKey(type || 'lessons', originalName, contentType);
+  const out = await getS3().send(new CreateMultipartUploadCommand({
+    Bucket: bucket(),
+    Key: key,
+    ContentType: contentType || 'application/octet-stream',
+  }));
+  return {
+    key,
+    uploadId: out.UploadId,
+    partSize: MULTIPART_PART_SIZE,
+  };
+}
+
+async function signUploadPart({ key, uploadId, partNumber, expiresIn = 3600 }) {
+  if (!r2Configured()) {
+    const err = new Error('R2 is not configured');
+    err.status = 503;
+    throw err;
+  }
+  const { UploadPartCommand } = require('@aws-sdk/client-s3');
+  const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
+  const cmd = new UploadPartCommand({
+    Bucket: bucket(),
+    Key: key,
+    UploadId: uploadId,
+    PartNumber: partNumber,
+  });
+  const url = await getSignedUrl(getS3(), cmd, { expiresIn });
+  return { url, partNumber };
+}
+
+async function completeMultipartUpload({ key, uploadId, parts }) {
+  if (!r2Configured()) {
+    const err = new Error('R2 is not configured');
+    err.status = 503;
+    throw err;
+  }
+  const { CompleteMultipartUploadCommand } = require('@aws-sdk/client-s3');
+  const sorted = [...(parts || [])]
+    .map((p) => ({
+      ETag: String(p.ETag || p.etag || '').replace(/^"|"$/g, ''),
+      PartNumber: Number(p.PartNumber || p.partNumber),
+    }))
+    .filter((p) => p.ETag && Number.isFinite(p.PartNumber) && p.PartNumber > 0)
+    .sort((a, b) => a.PartNumber - b.PartNumber)
+    .map((p) => ({ ETag: `"${p.ETag.replace(/"/g, '')}"`, PartNumber: p.PartNumber }));
+
+  if (!sorted.length) {
+    const err = new Error('Нет загруженных частей файла.');
+    err.status = 400;
+    throw err;
+  }
+
+  await getS3().send(new CompleteMultipartUploadCommand({
+    Bucket: bucket(),
+    Key: key,
+    UploadId: uploadId,
+    MultipartUpload: { Parts: sorted },
+  }));
+
+  return {
+    key,
+    url: publicUrlForKey(key),
+  };
+}
+
+async function abortMultipartUpload({ key, uploadId }) {
+  if (!r2Configured() || !key || !uploadId) return;
+  try {
+    const { AbortMultipartUploadCommand } = require('@aws-sdk/client-s3');
+    await getS3().send(new AbortMultipartUploadCommand({
+      Bucket: bucket(),
+      Key: key,
+      UploadId: uploadId,
+    }));
+  } catch (_) { /* ignore */ }
+}
+
+/** Short-lived signed GET for private buckets (or when R2_PUBLIC_URL unset). */
+async function signedGetUrl(key, expiresIn = 3600) {
+  if (!r2Configured() || !key) return null;
+  const pub = publicUrlForKey(key);
+  if (pub) return pub;
+  const { GetObjectCommand } = require('@aws-sdk/client-s3');
+  const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
+  return getSignedUrl(getS3(), new GetObjectCommand({
+    Bucket: bucket(),
+    Key: key,
+  }), { expiresIn });
+}
+
 async function getObject(key) {
   if (!r2Configured()) return null;
   const { GetObjectCommand } = require('@aws-sdk/client-s3');
   const client = getS3();
   const out = await client.send(new GetObjectCommand({
-    Bucket: process.env.R2_BUCKET,
+    Bucket: bucket(),
     Key: key,
   }));
   const chunks = [];
@@ -105,19 +210,16 @@ async function getObject(key) {
 async function deleteObject(key) {
   if (!r2Configured() || !key) return;
   const { DeleteObjectCommand } = require('@aws-sdk/client-s3');
-  const client = getS3();
-  await client.send(new DeleteObjectCommand({
-    Bucket: process.env.R2_BUCKET,
+  await getS3().send(new DeleteObjectCommand({
+    Bucket: bucket(),
     Key: key,
   }));
 }
 
 function assertProductionMediaReady() {
-  // R2 preferred; local disk fallback is allowed (see persistUpload)
   return Boolean(r2Configured() || !isProduction());
 }
 
-/** Write buffer to local disk (dev fallback) */
 function writeLocal(dir, originalName, mimeType, buffer) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   const filename = `${crypto.randomUUID()}${safeExt(originalName, mimeType)}`;
@@ -136,4 +238,10 @@ module.exports = {
   safeExt,
   assertProductionMediaReady,
   writeLocal,
+  createMultipartUpload,
+  signUploadPart,
+  completeMultipartUpload,
+  abortMultipartUpload,
+  signedGetUrl,
+  MULTIPART_PART_SIZE,
 };

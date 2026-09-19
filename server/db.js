@@ -320,164 +320,257 @@ async function loadFromPostgres() {
   }).filter((l) => l && l.id);
 }
 
-async function persistToPostgres() {
-  const client = await pg.getPool().connect();
-  try {
-    await client.query('BEGIN');
-    await client.query('DELETE FROM quiz_attempts');
-    await client.query('DELETE FROM notifications');
-    await client.query('DELETE FROM retellings');
-    await client.query('DELETE FROM flow_sessions');
-    await client.query('DELETE FROM assignment_students');
-    await client.query('DELETE FROM assignments');
-    // lessons: synced via dedicated SQL in API (avoid rewriting huge media_base64 on every save)
-    await client.query('DELETE FROM auth_sessions');
-    await client.query('DELETE FROM users');
+const PERSIST_LOCK_KEY = 88442201; // advisory lock id for EliteSchool persist
 
-    for (const u of db.users) {
-      if (!u || !u.id || !u.role || !u.name) {
-        console.warn('Skipping invalid user row during persist');
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function isDeadlock(err) {
+  return err && (err.code === '40P01' || /deadlock detected/i.test(String(err.message || '')));
+}
+
+async function applyLightMigrationsPg() {
+  // Targeted updates — never DELETE ALL on boot (avoids Neon deadlocks with other instances)
+  const code = currentTeacherCode();
+  await pg.query(
+    `UPDATE users
+     SET code = $1,
+         name = CASE WHEN name = 'Елена Викторовна' THEN 'Учитель' ELSE name END,
+         group_name = CASE WHEN group_name = 'Радуга' THEN NULL ELSE group_name END,
+         data = data
+           || jsonb_build_object('code', $1::text)
+           || CASE WHEN name = 'Елена Викторовна' THEN jsonb_build_object('name', 'Учитель') ELSE '{}'::jsonb END,
+         updated_at = now()
+     WHERE role = 'TEACHER'`,
+    [code]
+  );
+  await pg.query(
+    `UPDATE users
+     SET language = COALESCE(NULLIF(lower(language), ''), 'ru'),
+         enrollment_level = CASE
+           WHEN enrollment_level IN ('BEGINNER','INTERMEDIATE','ADVANCED') THEN enrollment_level
+           ELSE 'BEGINNER'
+         END,
+         updated_at = now()
+     WHERE role = 'STUDENT'`
+  );
+}
+
+async function persistToPostgres() {
+  const maxAttempts = 6;
+  let lastErr;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const client = await pg.getPool().connect();
+    let locked = false;
+    try {
+      // Serialize writers across Render + local so Neon never deadlocks on DELETE ALL
+      await client.query('SELECT pg_advisory_lock($1)', [PERSIST_LOCK_KEY]);
+      locked = true;
+      await client.query('BEGIN');
+
+      // Snapshot media before cascade deletes wipe retellings (assignments → ON DELETE CASCADE)
+      const retMediaSnap = await client.query(
+        `SELECT id, media_base64, media_key, media_path, mime_type FROM retellings
+         WHERE media_base64 IS NOT NULL OR media_key IS NOT NULL OR media_path IS NOT NULL`
+      );
+
+      await client.query('DELETE FROM quiz_attempts');
+      await client.query('DELETE FROM notifications');
+      await client.query('DELETE FROM flow_sessions');
+      await client.query('DELETE FROM assignment_students');
+      await client.query('DELETE FROM assignments');
+      // lessons: synced via dedicated SQL in API (avoid rewriting huge media_base64 on every save)
+      await client.query('DELETE FROM auth_sessions');
+      await client.query('DELETE FROM users');
+
+      for (const u of db.users) {
+        if (!u || !u.id || !u.role || !u.name) {
+          console.warn('Skipping invalid user row during persist');
+          continue;
+        }
+        const language = u.role === 'STUDENT' ? (normalizeLanguage(u.language) || 'ru') : null;
+        await client.query(
+          `INSERT INTO users (
+             id, role, name, code, password_hash, group_name, teacher_id, language, enrollment_level,
+             created_at, last_active_at, data
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb)`,
+          [
+            u.id,
+            u.role,
+            u.name,
+            u.code || null,
+            u.passwordHash || null,
+            u.groupName || null,
+            u.teacherId || null,
+            language,
+            u.enrollmentLevel || null,
+            u.createdAt || nowIso(),
+            u.lastActiveAt || null,
+            JSON.stringify(u),
+          ]
+        );
+      }
+
+      for (const s of db.authSessions) {
+        await client.query(
+          `INSERT INTO auth_sessions (id, user_id, token, created_at, expires_at, data)
+           VALUES ($1,$2,$3,$4,$5,$6::jsonb)`,
+          [s.id, s.userId, s.token, s.createdAt || nowIso(), s.expiresAt, JSON.stringify(s)]
+        );
+      }
+
+      for (const a of db.assignments) {
+        await client.query(
+          `INSERT INTO assignments (id, teacher_id, language, status, title, created_at, data)
+           VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb)`,
+          [
+            a.id,
+            a.teacherId,
+            normalizeLanguage(a.language) || 'ru',
+            a.status || 'ACTIVE',
+            a.title || '',
+            a.createdAt || nowIso(),
+            JSON.stringify(a),
+          ]
+        );
+      }
+
+      for (const x of db.assignmentStudents) {
+        await client.query(
+          `INSERT INTO assignment_students (assignment_id, student_id) VALUES ($1,$2)
+           ON CONFLICT DO NOTHING`,
+          [x.assignmentId, x.studentId]
+        );
+      }
+
+      for (const f of db.flowSessions) {
+        const id = f.id || `flow-${f.assignmentId}-${f.studentId}`;
+        await client.query(
+          `INSERT INTO flow_sessions (id, assignment_id, student_id, data)
+           VALUES ($1,$2,$3,$4::jsonb)
+           ON CONFLICT (assignment_id, student_id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()`,
+          [id, f.assignmentId, f.studentId, JSON.stringify(f)]
+        );
+      }
+
+      const retellingIds = db.retellings.map((r) => r.id).filter(Boolean);
+      if (retellingIds.length) {
+        await client.query(
+          `DELETE FROM retellings WHERE NOT (id = ANY($1::text[]))`,
+          [retellingIds]
+        );
+      } else {
+        await client.query('DELETE FROM retellings');
+      }
+      for (const r of db.retellings) {
+        if (!r?.id) continue;
+        const student = db.users.find((u) => u.id === r.studentId);
+        const assignment = db.assignments.find((a) => a.id === r.assignmentId);
+        const language = normalizeLanguage(r.language || student?.language || assignment?.language) || 'ru';
+        const lean = leanWithoutMedia(r);
+        await client.query(
+          `INSERT INTO retellings (
+             id, assignment_id, student_id, language, status, media_key, media_path, mime_type,
+             media_base64, created_at, submitted_at, data
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb)
+           ON CONFLICT (id) DO UPDATE SET
+             assignment_id = EXCLUDED.assignment_id,
+             student_id = EXCLUDED.student_id,
+             language = EXCLUDED.language,
+             status = EXCLUDED.status,
+             media_key = COALESCE(EXCLUDED.media_key, retellings.media_key),
+             media_path = COALESCE(EXCLUDED.media_path, retellings.media_path),
+             mime_type = COALESCE(EXCLUDED.mime_type, retellings.mime_type),
+             media_base64 = COALESCE(retellings.media_base64, EXCLUDED.media_base64),
+             submitted_at = COALESCE(EXCLUDED.submitted_at, retellings.submitted_at),
+             data = EXCLUDED.data,
+             updated_at = now()`,
+          [
+            r.id,
+            r.assignmentId,
+            r.studentId,
+            language,
+            r.status || 'SUBMITTED',
+            r.mediaKey || null,
+            r.mediaPath || null,
+            r.mimeType || null,
+            null,
+            r.createdAt || r.submittedAt || nowIso(),
+            r.submittedAt || null,
+            JSON.stringify(lean),
+          ]
+        );
+      }
+
+      for (const row of retMediaSnap.rows) {
+        await client.query(
+          `UPDATE retellings SET
+             media_base64 = COALESCE($2, media_base64),
+             media_key = COALESCE($3, media_key),
+             media_path = COALESCE($4, media_path),
+             mime_type = COALESCE($5, mime_type)
+           WHERE id = $1`,
+          [row.id, row.media_base64, row.media_key, row.media_path, row.mime_type]
+        );
+      }
+
+      for (const note of db.notifications) {
+        await client.query(
+          `INSERT INTO notifications (id, user_id, title, body, read, created_at, data)
+           VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb)`,
+          [
+            note.id,
+            note.userId,
+            note.title || '',
+            note.body || note.message || '',
+            Boolean(note.read),
+            note.createdAt || nowIso(),
+            JSON.stringify(note),
+          ]
+        );
+      }
+
+      for (const a of db.literacyAttempts) {
+        const language = a.subjectId === 'sub-english' ? 'en' : 'ru';
+        await client.query(
+          `INSERT INTO quiz_attempts (
+             id, student_id, quiz_id, subject_id, language, status, started_at, completed_at, data
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)`,
+          [
+            a.id,
+            a.studentId,
+            a.quizId || 'quiz-ru-literacy',
+            a.subjectId || 'sub-russian',
+            language,
+            a.status || 'IN_PROGRESS',
+            a.startedAt || null,
+            a.completedAt || null,
+            JSON.stringify(a),
+          ]
+        );
+      }
+
+      await client.query('COMMIT');
+      return;
+    } catch (err) {
+      lastErr = err;
+      try { await client.query('ROLLBACK'); } catch (_) { /* ignore */ }
+      if (isDeadlock(err) && attempt < maxAttempts) {
+        const wait = 150 * attempt + Math.floor(Math.random() * 400);
+        console.warn(`DB persist deadlock (attempt ${attempt}/${maxAttempts}), retry in ${wait}ms`);
+        await sleep(wait);
         continue;
       }
-      const language = u.role === 'STUDENT' ? (normalizeLanguage(u.language) || 'ru') : null;
-      await client.query(
-        `INSERT INTO users (
-           id, role, name, code, password_hash, group_name, teacher_id, language, enrollment_level,
-           created_at, last_active_at, data
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb)`,
-        [
-          u.id,
-          u.role,
-          u.name,
-          u.code || null,
-          u.passwordHash || null,
-          u.groupName || null,
-          u.teacherId || null,
-          language,
-          u.enrollmentLevel || null,
-          u.createdAt || nowIso(),
-          u.lastActiveAt || null,
-          JSON.stringify(u),
-        ]
-      );
+      throw err;
+    } finally {
+      if (locked) {
+        try { await client.query('SELECT pg_advisory_unlock($1)', [PERSIST_LOCK_KEY]); } catch (_) { /* ignore */ }
+      }
+      client.release();
     }
-
-    for (const s of db.authSessions) {
-      await client.query(
-        `INSERT INTO auth_sessions (id, user_id, token, created_at, expires_at, data)
-         VALUES ($1,$2,$3,$4,$5,$6::jsonb)`,
-        [s.id, s.userId, s.token, s.createdAt || nowIso(), s.expiresAt, JSON.stringify(s)]
-      );
-    }
-
-    for (const a of db.assignments) {
-      await client.query(
-        `INSERT INTO assignments (id, teacher_id, language, status, title, created_at, data)
-         VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb)`,
-        [
-          a.id,
-          a.teacherId,
-          normalizeLanguage(a.language) || 'ru',
-          a.status || 'ACTIVE',
-          a.title || '',
-          a.createdAt || nowIso(),
-          JSON.stringify(a),
-        ]
-      );
-    }
-
-    for (const x of db.assignmentStudents) {
-      await client.query(
-        `INSERT INTO assignment_students (assignment_id, student_id) VALUES ($1,$2)
-         ON CONFLICT DO NOTHING`,
-        [x.assignmentId, x.studentId]
-      );
-    }
-
-    for (const f of db.flowSessions) {
-      const id = f.id || `flow-${f.assignmentId}-${f.studentId}`;
-      await client.query(
-        `INSERT INTO flow_sessions (id, assignment_id, student_id, data)
-         VALUES ($1,$2,$3,$4::jsonb)
-         ON CONFLICT (assignment_id, student_id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()`,
-        [id, f.assignmentId, f.studentId, JSON.stringify(f)]
-      );
-    }
-
-    for (const r of db.retellings) {
-      const student = db.users.find((u) => u.id === r.studentId);
-      const assignment = db.assignments.find((a) => a.id === r.assignmentId);
-      const language = normalizeLanguage(r.language || student?.language || assignment?.language) || 'ru';
-      const lean = { ...r };
-      const mediaBase64 = lean.mediaBase64 || null;
-      delete lean.mediaBase64;
-      await client.query(
-        `INSERT INTO retellings (
-           id, assignment_id, student_id, language, status, media_key, media_path, mime_type,
-           media_base64, created_at, submitted_at, data
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb)`,
-        [
-          r.id,
-          r.assignmentId,
-          r.studentId,
-          language,
-          r.status || 'SUBMITTED',
-          r.mediaKey || null,
-          r.mediaPath || null,
-          r.mimeType || null,
-          mediaBase64,
-          r.createdAt || r.submittedAt || nowIso(),
-          r.submittedAt || null,
-          JSON.stringify(lean),
-        ]
-      );
-    }
-
-    for (const note of db.notifications) {
-      await client.query(
-        `INSERT INTO notifications (id, user_id, title, body, read, created_at, data)
-         VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb)`,
-        [
-          note.id,
-          note.userId,
-          note.title || '',
-          note.body || note.message || '',
-          Boolean(note.read),
-          note.createdAt || nowIso(),
-          JSON.stringify(note),
-        ]
-      );
-    }
-
-    for (const a of db.literacyAttempts) {
-      const language = a.subjectId === 'sub-english' ? 'en' : 'ru';
-      await client.query(
-        `INSERT INTO quiz_attempts (
-           id, student_id, quiz_id, subject_id, language, status, started_at, completed_at, data
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)`,
-        [
-          a.id,
-          a.studentId,
-          a.quizId || 'quiz-ru-literacy',
-          a.subjectId || 'sub-russian',
-          language,
-          a.status || 'IN_PROGRESS',
-          a.startedAt || null,
-          a.completedAt || null,
-          JSON.stringify(a),
-        ]
-      );
-    }
-
-    // lessons intentionally not bulk-rewritten here
-
-    await client.query('COMMIT');
-  } catch (err) {
-    try { await client.query('ROLLBACK'); } catch (_) { /* ignore */ }
-    throw err;
-  } finally {
-    client.release();
   }
+  throw lastErr || new Error('persistToPostgres failed');
 }
 
 function persistJson() {
@@ -561,8 +654,21 @@ async function loadAsync() {
     await pg.query(sql);
     await loadFromPostgres();
     seedIfEmpty();
-    const changed = migrateAuth() | migrateTracks() | migrateQuizAttempts();
-    if (changed || !db.users.length) await persistToPostgres();
+    // In-memory migrations for runtime consistency
+    migrateAuth();
+    migrateTracks();
+    migrateQuizAttempts();
+    if (!db.users.length) {
+      // First boot only — full seed write
+      await persistToPostgres();
+    } else {
+      // Never DELETE ALL on boot (causes Neon deadlocks with overlapping instances)
+      try {
+        await applyLightMigrationsPg();
+      } catch (err) {
+        console.warn('Light DB migration skipped:', err.message || err);
+      }
+    }
     console.log(`DB mode: postgres (${db.users.length} users)`);
     pg.installShutdownHooks();
     return;
@@ -641,6 +747,45 @@ async function upsertLessonPg(lesson) {
   );
 }
 
+async function upsertRetellingPg(retelling) {
+  if (!usePostgres() || !retelling?.id) return;
+  const student = db.users.find((u) => u.id === retelling.studentId);
+  const assignment = db.assignments.find((a) => a.id === retelling.assignmentId);
+  const language = normalizeLanguage(retelling.language || student?.language || assignment?.language) || 'ru';
+  await pg.query(
+    `INSERT INTO retellings (
+       id, assignment_id, student_id, language, status, media_key, media_path, mime_type,
+       media_base64, created_at, submitted_at, data
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb)
+     ON CONFLICT (id) DO UPDATE SET
+       assignment_id = EXCLUDED.assignment_id,
+       student_id = EXCLUDED.student_id,
+       language = EXCLUDED.language,
+       status = EXCLUDED.status,
+       media_key = COALESCE(EXCLUDED.media_key, retellings.media_key),
+       media_path = COALESCE(EXCLUDED.media_path, retellings.media_path),
+       mime_type = COALESCE(EXCLUDED.mime_type, retellings.mime_type),
+       media_base64 = COALESCE(EXCLUDED.media_base64, retellings.media_base64),
+       submitted_at = COALESCE(EXCLUDED.submitted_at, retellings.submitted_at),
+       data = EXCLUDED.data,
+       updated_at = now()`,
+    [
+      retelling.id,
+      retelling.assignmentId,
+      retelling.studentId,
+      language,
+      retelling.status || 'SUBMITTED',
+      retelling.mediaKey || null,
+      retelling.mediaPath || null,
+      retelling.mimeType || null,
+      retelling.mediaBase64 || null,
+      retelling.createdAt || retelling.submittedAt || nowIso(),
+      retelling.submittedAt || null,
+      JSON.stringify(leanWithoutMedia(retelling)),
+    ]
+  );
+}
+
 module.exports = {
   DATA_DIR,
   SEEDS_DIR,
@@ -660,5 +805,6 @@ module.exports = {
   getStorageMode,
   usePostgres,
   upsertLessonPg,
+  upsertRetellingPg,
   TEACHER_CODE: null,
 };

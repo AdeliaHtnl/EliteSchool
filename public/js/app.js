@@ -1,11 +1,19 @@
 import { api, friendlyError, hydrateAuthMedia } from './api.js';
 import { store, ic, formatTime, ring, skeletonPage, errorState, esc, parseLang, trackSlug, subjectSlugForUser } from './ui.js';
 import * as views from './views.js';
+import { enhanceSelects } from './dropdown.js';
+import { wireUploadCard } from './upload.js';
 
 const root = document.getElementById('root');
 const toastWrap = document.createElement('div');
 toastWrap.className = 'toast-wrap';
 document.body.appendChild(toastWrap);
+
+let publicConfig = {
+  maxVideoSizeBytes: 5 * 1024 * 1024 * 1024,
+  maxVideoSizeMb: 5120,
+  r2Enabled: false,
+};
 
 const STUDENT_ROUTES = new Set([
   'dashboard', 'retell-list', 'retell-intro', 'retell-read', 'retell-prep', 'retell-record',
@@ -17,7 +25,8 @@ const STUDENT_ROUTES = new Set([
 ]);
 const TEACHER_ROUTES = new Set([
   'teacher-dashboard', 'teacher-students', 'teacher-student-detail', 'teacher-assignments',
-  'teacher-video-lessons', 'teacher-bonus', 'teacher-create', 'teacher-review', 'teacher-review-detail',
+  'teacher-video-lessons', 'teacher-bonus', 'teacher-create', 'teacher-assignment-edit',
+  'teacher-review', 'teacher-review-detail',
   'teacher-stats', 'teacher-profile', 'teacher-literacy',
   'teacher-video-create', 'teacher-bonus-create', 'teacher-lesson', 'teacher-track',
 ]);
@@ -168,6 +177,14 @@ function mount(html) {
   root.innerHTML = html;
   window.scrollTo({ top: 0, behavior: 'smooth' });
   bindKeyboardInset();
+  enhanceSelects(root);
+  root.querySelectorAll('[data-form="create-lesson"]').forEach((form) => {
+    const card = wireUploadCard(form, {
+      maxBytes: publicConfig.maxVideoSizeBytes,
+      onReady: (res) => { form._r2Upload = res; },
+    });
+    form._uploadCard = card;
+  });
   hydrateAuthMedia(root).catch(() => {});
 }
 
@@ -188,11 +205,16 @@ function bindKeyboardInset() {
   apply();
 }
 
+function closeNotify() {
+  document.getElementById('notifyPanel')?.classList.remove('open');
+}
+
 function toggleMore(force) {
   const sheet = document.getElementById('moreSheet');
   if (!sheet) return;
   const open = force === true ? true : force === false ? false : sheet.hasAttribute('hidden');
   if (open) {
+    closeNotify();
     sheet.removeAttribute('hidden');
     sheet.classList.add('open');
   } else {
@@ -549,6 +571,11 @@ async function loadNotifyPanel() {
 }
 
 root.addEventListener('click', async (e) => {
+  const panel = document.getElementById('notifyPanel');
+  if (panel?.classList.contains('open') && !e.target.closest('.icon-btn-wrap') && !e.target.closest('#notifyPanel')) {
+    closeNotify();
+  }
+
   const moreBtn = e.target.closest('[data-action="toggle-more"]');
   if (moreBtn) {
     e.preventDefault();
@@ -575,6 +602,7 @@ root.addEventListener('click', async (e) => {
     const panel = document.getElementById('notifyPanel');
     if (!panel) return;
     const open = !panel.classList.contains('open');
+    toggleMore(false);
     panel.classList.toggle('open', open);
     if (open) loadNotifyPanel();
     return;
@@ -783,6 +811,26 @@ root.addEventListener('click', async (e) => {
       toast(err.message, 'err');
       delLesson.disabled = false;
       delete delLesson.dataset.busy;
+    }
+    return;
+  }
+
+  const delAssign = e.target.closest('[data-action="delete-assignment"]');
+  if (delAssign) {
+    e.preventDefault();
+    if (delAssign.dataset.busy === '1') return;
+    if (!window.confirm('Удалить задание? Пересказы учеников по нему тоже будут удалены.')) return;
+    delAssign.dataset.busy = '1';
+    delAssign.disabled = true;
+    try {
+      await api(`/api/assignments/${encodeURIComponent(delAssign.dataset.id)}`, { method: 'DELETE' });
+      toast('Задание удалено.');
+      if (delAssign.dataset.back) nav(delAssign.dataset.back);
+      else await render();
+    } catch (err) {
+      toast(err.message, 'err');
+      delAssign.disabled = false;
+      delete delAssign.dataset.busy;
     }
     return;
   }
@@ -1065,6 +1113,35 @@ root.addEventListener('submit', async (e) => {
     }
     return;
   }
+  if (form.dataset.form === 'edit-assignment') {
+    const fd = new FormData(form);
+    const id = form.dataset.id;
+    const assignAll = form.querySelector('[data-assign-all]')?.checked;
+    const studentIds = assignAll ? [] : [...form.querySelectorAll('input[name="studentIds"]:checked')].map((i) => i.value);
+    const deadlineRaw = fd.get('deadline');
+    const body = {
+      title: fd.get('title'),
+      description: fd.get('description'),
+      text: fd.get('text'),
+      readingTime: Number(fd.get('readingMin')) * 60,
+      preparationTime: Number(fd.get('prepMin')) * 60,
+      retellingTime: Number(fd.get('retellMin')) * 60,
+      mode: fd.get('mode'),
+      deadline: deadlineRaw ? new Date(deadlineRaw).toISOString() : null,
+      clearDeadline: !deadlineRaw,
+      studentIds,
+      status: fd.get('status') || 'ACTIVE',
+      targetLevel: fd.get('targetLevel') || 'ALL',
+    };
+    try {
+      await api(`/api/assignments/${encodeURIComponent(id)}`, { method: 'PATCH', body });
+      toast('Задание обновлено.');
+      nav(`teacher-assignments/${trackSlug(fd.get('language') || store.track)}`);
+    } catch (err) {
+      setError(form, err.message);
+    }
+    return;
+  }
   if (form.dataset.form === 'lesson-replace-file') {
     const fd = new FormData(form);
     const id = form.dataset.id;
@@ -1086,7 +1163,37 @@ root.addEventListener('submit', async (e) => {
     const submitBtn = form.querySelector('[type="submit"]');
     if (submitBtn) submitBtn.disabled = true;
     try {
-      await api('/api/lessons', { method: 'POST', body: fd });
+      const r2 = form._r2Upload;
+      const hasFileInput = form.querySelector('[data-upload-input]')?.files?.[0];
+      if (hasFileInput && !r2) {
+        throw new Error('Дождитесь окончания загрузки видео или вставьте ссылку YouTube.');
+      }
+      if (r2?.fileKey) {
+        const body = {
+          section: fd.get('section'),
+          type: fd.get('type') || 'VIDEO',
+          language: fd.get('language'),
+          title: fd.get('title'),
+          description: fd.get('description'),
+          category: fd.get('category'),
+          level: fd.get('level'),
+          targetLevel: fd.get('targetLevel') || 'ALL',
+          duration: fd.get('duration'),
+          videoUrl: fd.get('videoUrl') || '',
+          note: fd.get('note') || '',
+          assignAll: form.querySelector('[data-assign-all]')?.checked ? '1' : '0',
+          studentIds: [...form.querySelectorAll('input[name="studentIds"]:checked')].map((i) => i.value),
+          fileKey: r2.fileKey,
+          mediaUrl: r2.mediaUrl || '',
+          mimeType: r2.mimeType || '',
+          originalName: r2.originalName || '',
+        };
+        await api('/api/lessons', { method: 'POST', body });
+      } else {
+        // YouTube-only or tiny local fallback — strip file input from card
+        fd.delete('file');
+        await api('/api/lessons', { method: 'POST', body: fd });
+      }
       const section = fd.get('section');
       const lang = parseLang(fd.get('language') || store.track);
       toast(section === 'BONUS' ? 'Бонусный урок выдан ученикам.' : 'Видеоурок опубликован.');
@@ -1477,7 +1584,7 @@ async function render() {
       store.track = lang;
       const data = await api(`/api/assignments?language=${lang}`);
       if (token !== renderToken) return;
-      mount(views.viewTeacherAssignments(data.assignments || []));
+      mount(views.viewTeacherAssignments(data.assignments || [], lang));
       return;
     }
     if (name === 'teacher-create') {
@@ -1486,6 +1593,17 @@ async function render() {
       const data = await api(`/api/teacher/students?language=${lang}`);
       if (token !== renderToken) return;
       mount(views.viewTeacherCreate(data.students || [], lang));
+      return;
+    }
+    if (name === 'teacher-assignment-edit' && id) {
+      const [detail, studentsData] = await Promise.all([
+        api(`/api/assignments/${encodeURIComponent(id)}`),
+        api('/api/teacher/students'),
+      ]);
+      if (token !== renderToken) return;
+      const lang = parseLang(detail.assignment?.language);
+      store.track = lang;
+      mount(views.viewTeacherEditAssignment(detail, studentsData.students || []));
       return;
     }
     if (name === 'teacher-review') {
@@ -1586,6 +1704,14 @@ async function render() {
 
 window.addEventListener('hashchange', () => {
   teardownRecorder();
+  closeNotify();
+  toggleMore(false);
   render();
 });
-render();
+
+(async () => {
+  try {
+    publicConfig = { ...publicConfig, ...(await api('/api/config/public')) };
+  } catch (_) { /* offline / first paint */ }
+  render();
+})();

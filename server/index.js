@@ -15,6 +15,7 @@ const gameSessions = require('./gameSessions');
 const db = require('./db');
 const pg = require('./pg');
 const r2 = require('./r2');
+const limits = require('./limits');
 const literacy = require('./literacy');
 const quizzes = require('./quizzes');
 const {
@@ -30,7 +31,10 @@ const {
 const PORT = Number(process.env.PORT) || 3000;
 const COOKIE = 'sid';
 const SESSION_DAYS = 7;
-const MAX_UPLOAD_BYTES = 120 * 1024 * 1024;
+const MAX_UPLOAD_BYTES = limits.MAX_RETELL_UPLOAD_BYTES;
+const MAX_INLINE_BYTES = limits.MAX_INLINE_FALLBACK_BYTES;
+const MAX_VIDEO_SIZE_BYTES = limits.MAX_VIDEO_SIZE_BYTES;
+const MAX_VIDEO_SIZE_MB = limits.MAX_VIDEO_SIZE_MB;
 
 const ALLOWED_MIME = new Set([
   'audio/webm', 'audio/mp4', 'audio/mpeg', 'audio/ogg', 'audio/wav', 'audio/aac', 'audio/x-m4a', 'audio/webm;codecs=opus',
@@ -40,9 +44,19 @@ const ALLOWED_MIME = new Set([
 const CRITERIA = ['contentScore', 'sequenceScore', 'understandingScore', 'speechScore', 'vocabularyScore'];
 
 const LESSON_MIME = new Set([
-  'video/mp4', 'video/webm', 'video/quicktime', 'video/ogg', 'video/x-matroska',
-  'application/pdf',
+  ...limits.VIDEO_MIME,
+  ...limits.PDF_MIME,
 ]);
+
+/** Pending R2 multipart sessions: uploadId → { teacherId, key, expiresAt } */
+const pendingR2Uploads = new Map();
+
+function prunePendingR2() {
+  const nowMs = Date.now();
+  for (const [id, row] of pendingR2Uploads) {
+    if (!row || row.expiresAt < nowMs) pendingR2Uploads.delete(id);
+  }
+}
 
 const MIME_EXT = {
   'audio/webm': '.webm',
@@ -90,7 +104,21 @@ app.use((req, res, next) => {
 });
 
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok' });
+  res.json({
+    status: 'ok',
+    r2: r2.r2Configured(),
+    maxVideoMb: MAX_VIDEO_SIZE_MB,
+  });
+});
+
+app.get('/api/config/public', (_req, res) => {
+  res.json({
+    maxVideoSizeBytes: MAX_VIDEO_SIZE_BYTES,
+    maxVideoSizeMb: MAX_VIDEO_SIZE_MB,
+    r2Enabled: r2.r2Configured(),
+    videoExtensions: [...limits.VIDEO_EXTENSIONS],
+    multipartPartSize: limits.MULTIPART_PART_SIZE,
+  });
 });
 
 app.get('/health/db', async (_req, res) => {
@@ -476,12 +504,10 @@ const upload = multer({
 
 const uploadLesson = multer({
   storage: memoryStorage,
-  limits: { fileSize: 200 * 1024 * 1024 },
+  limits: { fileSize: Math.min(MAX_INLINE_BYTES, 50 * 1024 * 1024) },
   fileFilter: (_req, file, cb) => {
-    const m = mimeBase(file.mimetype);
-    const ext = path.extname(file.originalname || '').toLowerCase();
-    if (LESSON_MIME.has(m) || ext === '.pdf' || ext === '.mp4' || ext === '.webm' || ext === '.mov') cb(null, true);
-    else cb(new Error('Загрузите видео (MP4, WebM) или PDF.'));
+    if (limits.isAllowedLessonFile(file.originalname, file.mimetype)) cb(null, true);
+    else cb(new Error('Загрузите видео (MP4, MOV, WebM, MKV, AVI) или PDF.'));
   },
 });
 
@@ -503,15 +529,21 @@ async function persistUpload(file, type) {
       originalName: path.basename(String(file.originalname || 'file')),
     };
   }
-  // Without R2: persist bytes in Neon (mediaBase64) so files survive Render redeploys.
-  // Local disk is cache only — Render free wipes it on every deploy.
+  // Production lessons must use R2 — never rely on Render ephemeral disk for video.
+  if (isProduction() && type === 'lessons') {
+    const err = new Error(
+      'Для видеоуроков нужен Cloudflare R2. Настройте R2_* на Render или вставьте ссылку YouTube.'
+    );
+    err.status = 503;
+    throw err;
+  }
+  // Dev / retelling fallback: small files only, as Neon base64
   const dir = type === 'lessons' ? db.LESSONS_DIR : db.UPLOADS_DIR;
   const local = r2.writeLocal(dir, file.originalname, file.mimetype, file.buffer);
-  const MAX_INLINE = 40 * 1024 * 1024;
-  if (file.buffer.length > MAX_INLINE) {
+  if (file.buffer.length > MAX_INLINE_BYTES) {
     const err = new Error(
-      'Без облачного хранилища (R2) файл больше 40 МБ не сохранится после обновления сервера. '
-      + 'Вставьте ссылку YouTube или загрузите файл меньше 40 МБ.'
+      `Без R2 файл больше ${limits.formatSizeMb(MAX_INLINE_BYTES)} МБ не сохранится. `
+      + 'Настройте Cloudflare R2 или вставьте ссылку YouTube.'
     );
     err.status = 400;
     throw err;
@@ -748,12 +780,15 @@ app.post('/api/notifications/read-all', requireAuth, (req, res) => {
 // -------------------- Assignments --------------------
 app.get('/api/assignments', requireAuth, (req, res) => {
   const user = req.auth.user;
+  let statusChanged = false;
   if (user.role === 'TEACHER') {
     const langFilter = req.query.language ? parseLang(req.query.language) : null;
     const list = store().assignments
       .filter((a) => a.teacherId === user.id && (!langFilter || assignmentLang(a) === langFilter))
       .map((a) => {
+        const before = a.status;
         refreshAssignmentStatus(a);
+        if (a.status !== before) statusChanged = true;
         const assigned = store().assignmentStudents.filter((x) => x.assignmentId === a.id);
         const rets = store().retellings.filter((r) => r.assignmentId === a.id);
         const reviewed = rets.filter((r) => r.status === 'REVIEWED' && r.scores);
@@ -770,16 +805,21 @@ app.get('/api/assignments', requireAuth, (req, res) => {
         };
       })
       .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-    save();
+    if (statusChanged) save();
     return res.json({ assignments: list });
   }
   const ids = store().assignmentStudents.filter((x) => x.studentId === user.id).map((x) => x.assignmentId);
   const list = ids
     .map(getAssignment)
     .filter((a) => a && a.status !== 'DRAFT' && assignmentLang(a) === userLang(user))
-    .map((a) => studentAssignmentView(a, user))
+    .map((a) => {
+      const before = a.status;
+      refreshAssignmentStatus(a);
+      if (a.status !== before) statusChanged = true;
+      return studentAssignmentView(a, user);
+    })
     .sort((a, b) => new Date(a.deadline || a.createdAt) - new Date(b.deadline || b.createdAt));
-  save();
+  if (statusChanged) save();
   res.json({ assignments: list });
 });
 
@@ -790,6 +830,7 @@ app.get('/api/assignments/:id', requireAuth, (req, res) => {
   if (user.role === 'TEACHER') {
     const denied = assertTeacherAssignment(req, a);
     if (denied) return res.status(denied.status).json({ error: denied.error });
+    const before = a.status;
     refreshAssignmentStatus(a);
     const assigned = store().assignmentStudents
       .filter((x) => x.assignmentId === a.id)
@@ -799,7 +840,7 @@ app.get('/api/assignments/:id', requireAuth, (req, res) => {
     const retellings = store().retellings
       .filter((r) => r.assignmentId === a.id)
       .map((r) => publicRetelling(r));
-    save();
+    if (a.status !== before) save();
     return res.json({
       assignment: { ...stripText(a, { includeText: true }), assignedStudents: assigned },
       retellings,
@@ -808,8 +849,9 @@ app.get('/api/assignments/:id', requireAuth, (req, res) => {
   if (!assignedTo(a.id, user.id) || a.status === 'DRAFT' || assignmentLang(a) !== userLang(user)) {
     return res.status(403).json({ error: 'Это задание вам не назначено.' });
   }
+  const before = a.status;
   const view = studentAssignmentView(a, user);
-  save();
+  if (a.status !== before) save();
   res.json({ assignment: view });
 });
 
@@ -887,8 +929,68 @@ app.patch('/api/assignments/:id', requireAuth, requireRole('TEACHER'), (req, res
   if (typeof b.title === 'string' && cleanTitle(b.title)) a.title = cleanTitle(b.title);
   if (typeof b.description === 'string') a.description = b.description.trim();
   if (typeof b.text === 'string' && b.text.trim()) a.text = b.text.trim();
+
+  if (b.readingTime != null) {
+    const n = Number(b.readingTime);
+    if (!Number.isFinite(n) || n <= 0 || n > 60 * 60 * 3) {
+      return res.status(400).json({ error: 'Некорректное время чтения.' });
+    }
+    a.readingTime = Math.round(n);
+  }
+  if (b.preparationTime != null) {
+    const n = Number(b.preparationTime);
+    if (!Number.isFinite(n) || n <= 0 || n > 60 * 60 * 3) {
+      return res.status(400).json({ error: 'Некорректное время подготовки.' });
+    }
+    a.preparationTime = Math.round(n);
+  }
+  if (b.retellingTime != null) {
+    const n = Number(b.retellingTime);
+    if (!Number.isFinite(n) || n <= 0 || n > 60 * 60 * 3) {
+      return res.status(400).json({ error: 'Некорректное время пересказа.' });
+    }
+    a.retellingTime = Math.round(n);
+  }
+  if (b.mode != null) {
+    const mode = String(b.mode || '').toUpperCase();
+    if (!['AUDIO', 'VIDEO', 'BOTH'].includes(mode)) {
+      return res.status(400).json({ error: 'Недопустимый тип записи.' });
+    }
+    a.mode = mode;
+  }
+  if (b.clearDeadline) {
+    a.deadline = null;
+  } else if (b.deadline != null) {
+    if (!b.deadline) a.deadline = null;
+    else {
+      const d = new Date(b.deadline);
+      if (Number.isNaN(d.getTime())) return res.status(400).json({ error: 'Некорректный дедлайн.' });
+      a.deadline = d.toISOString();
+    }
+  }
+  if (b.targetLevel != null) a.targetLevel = parseLevelOrAll(b.targetLevel);
+
   const prev = a.status;
   if (b.status && ['DRAFT', 'ACTIVE', 'COMPLETED'].includes(b.status)) a.status = b.status;
+
+  if (Array.isArray(b.studentIds)) {
+    const language = assignmentLang(a);
+    const targetLevel = parseLevelOrAll(a.targetLevel);
+    const myStudents = studentsOfTeacher(a.teacherId, { language, level: targetLevel });
+    let studentIds = b.studentIds.map(String);
+    if (!studentIds.length) studentIds = myStudents.map((s) => s.id);
+    studentIds = [...new Set(studentIds)];
+    const allowed = new Set(myStudents.map((s) => s.id));
+    if (studentIds.some((id) => !allowed.has(id))) {
+      return res.status(403).json({ error: 'Нельзя назначить задание ученику другого раздела или уровня.' });
+    }
+    if (!studentIds.length) return res.status(400).json({ error: 'Нет учеников для назначения.' });
+    store().assignmentStudents = store().assignmentStudents.filter((x) => x.assignmentId !== a.id);
+    studentIds.forEach((studentId) => {
+      store().assignmentStudents.push({ assignmentId: a.id, studentId });
+    });
+  }
+
   if (prev === 'DRAFT' && a.status === 'ACTIVE') {
     store().assignmentStudents.filter((x) => x.assignmentId === a.id).forEach((x) => {
       notify(x.studentId, {
@@ -899,8 +1001,38 @@ app.patch('/api/assignments/:id', requireAuth, requireRole('TEACHER'), (req, res
       });
     });
   }
+  refreshAssignmentStatus(a);
   save();
   res.json({ assignment: stripText(a, { includeText: true }) });
+});
+
+app.delete('/api/assignments/:id', requireAuth, requireRole('TEACHER'), async (req, res) => {
+  try {
+    const a = getAssignment(req.params.id);
+    const denied = assertTeacherAssignment(req, a);
+    if (denied) return res.status(denied.status).json({ error: denied.error });
+    const aid = a.id;
+    const rets = store().retellings.filter((r) => r.assignmentId === aid);
+    for (const r of rets) {
+      if (r.mediaKey && r2.r2Configured()) {
+        try { await r2.deleteObject(r.mediaKey); } catch (_) { /* ignore */ }
+      }
+    }
+    store().retellings = store().retellings.filter((r) => r.assignmentId !== aid);
+    store().flowSessions = store().flowSessions.filter((f) => f.assignmentId !== aid);
+    store().assignmentStudents = store().assignmentStudents.filter((x) => x.assignmentId !== aid);
+    store().assignments = store().assignments.filter((x) => x.id !== aid);
+    // Fast path: cascade deletes retellings/flows/links in Postgres
+    if (pg.hasDatabaseUrl()) {
+      await pg.query('DELETE FROM assignments WHERE id = $1', [aid]);
+    } else {
+      await save();
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('assignment delete failed:', err.message);
+    res.status(500).json({ error: err.message || 'Не удалось удалить задание.' });
+  }
 });
 
 app.post('/api/assignments/:id/start', requireAuth, requireRole('STUDENT'), (req, res) => {
@@ -1144,6 +1276,8 @@ async function handleUpload(req, res) {
     });
   }
   refreshAssignmentStatus(a);
+  // Durable write first — do not rely on full persist (cascade historically wiped media)
+  await db.upsertRetellingPg(retelling);
   save();
   res.status(201).json({ retelling: publicRetelling(retelling) });
   } catch (err) {
@@ -1156,7 +1290,7 @@ app.post('/api/retellings', requireAuth, requireRole('STUDENT'), (req, res) => {
   upload.single('file')(req, res, (err) => {
     if (err) {
       const msg = err.code === 'LIMIT_FILE_SIZE'
-        ? 'Файл слишком большой. Максимум 120 МБ.'
+        ? 'Файл слишком большой. Максимум 400 МБ.'
         : (err.message || 'Не удалось загрузить файл.');
       return res.status(400).json({ error: msg });
     }
@@ -1164,7 +1298,8 @@ app.post('/api/retellings', requireAuth, requireRole('STUDENT'), (req, res) => {
   });
 });
 
-app.post('/api/retellings/:id/review', requireAuth, requireRole('TEACHER'), (req, res) => {
+app.post('/api/retellings/:id/review', requireAuth, requireRole('TEACHER'), async (req, res) => {
+  try {
   const r = store().retellings.find((x) => x.id === req.params.id);
   if (!r) return res.status(404).json({ error: 'Пересказ не найден.' });
   const student = store().users.find((u) => u.id === r.studentId);
@@ -1196,8 +1331,13 @@ app.post('/api/retellings/:id/review', requireAuth, requireRole('TEACHER'), (req
     body: `Оценка за «${assignment ? assignment.title : 'задание'}»: ${scores.totalScore} / 100.`,
     link: `#retell-result/${r.id}`,
   });
+  await db.upsertRetellingPg(r);
   save();
   res.json({ retelling: publicRetelling(r) });
+  } catch (err) {
+    console.error('review failed:', err.message);
+    res.status(500).json({ error: err.message || 'Не удалось сохранить оценку.' });
+  }
 });
 
 app.post('/api/retellings/:id/ai-analyze', requireAuth, requireRole('TEACHER'), (req, res) => {
@@ -2429,6 +2569,9 @@ app.get('/api/lessons/:id/file', requireAuth, async (req, res) => {
       return res.redirect(302, lesson.mediaUrl);
     }
     if (lesson.fileKey && r2.r2Configured()) {
+      // Stream large videos from R2 via signed URL — do not buffer through Render
+      const signed = await r2.signedGetUrl(lesson.fileKey, 3600);
+      if (signed) return res.redirect(302, signed);
       const obj = await r2.getObject(lesson.fileKey);
       if (!obj) return res.status(404).json({ error: 'Файл не найден.' });
       const inline = String(lesson.mimeType || '').includes('pdf') || String(lesson.mimeType || '').startsWith('video/');
@@ -2460,10 +2603,133 @@ app.get('/api/lessons/:id/file', requireAuth, async (req, res) => {
   }
 });
 
+app.post('/api/lessons/upload/init', requireAuth, requireRole('TEACHER'), async (req, res) => {
+  try {
+    prunePendingR2();
+    const b = req.body || {};
+    const filename = String(b.filename || b.originalName || '').trim();
+    const mimeType = String(b.mimeType || b.contentType || 'application/octet-stream');
+    const size = Number(b.size || b.fileSize || 0);
+    if (!filename) return res.status(400).json({ error: 'Укажите имя файла.' });
+    try {
+      if (!limits.isAllowedLessonFile(filename, mimeType)) {
+        return res.status(400).json({ error: 'Разрешены только видео MP4/MOV/WebM/MKV/AVI или PDF.' });
+      }
+    } catch (e) {
+      return res.status(e.status || 400).json({ error: e.message || 'Недопустимый файл.' });
+    }
+    if (!Number.isFinite(size) || size <= 0) {
+      return res.status(400).json({ error: 'Некорректный размер файла.' });
+    }
+    if (size > MAX_VIDEO_SIZE_BYTES) {
+      return res.status(400).json({
+        error: `Файл слишком большой. Максимум ${MAX_VIDEO_SIZE_MB} МБ (5 ГБ).`,
+      });
+    }
+    if (!r2.r2Configured()) {
+      return res.status(503).json({
+        error: 'Cloudflare R2 не настроен. Добавьте R2_* на Render или используйте ссылку YouTube.',
+        r2Enabled: false,
+      });
+    }
+    const mp = await r2.createMultipartUpload({
+      type: 'lessons',
+      originalName: filename,
+      contentType: mimeType,
+    });
+    pendingR2Uploads.set(mp.uploadId, {
+      teacherId: req.auth.user.id,
+      key: mp.key,
+      filename,
+      mimeType,
+      size,
+      expiresAt: Date.now() + 6 * 60 * 60 * 1000,
+    });
+    const partCount = Math.ceil(size / mp.partSize);
+    res.json({
+      uploadId: mp.uploadId,
+      key: mp.key,
+      partSize: mp.partSize,
+      partCount,
+      maxVideoSizeBytes: MAX_VIDEO_SIZE_BYTES,
+    });
+  } catch (err) {
+    console.error('upload init failed:', err.message);
+    res.status(err.status || 500).json({ error: err.message || 'Не удалось начать загрузку.' });
+  }
+});
+
+app.post('/api/lessons/upload/sign-part', requireAuth, requireRole('TEACHER'), async (req, res) => {
+  try {
+    const b = req.body || {};
+    const uploadId = String(b.uploadId || '');
+    const key = String(b.key || '');
+    const partNumber = Number(b.partNumber);
+    const session = pendingR2Uploads.get(uploadId);
+    if (!session || session.teacherId !== req.auth.user.id || session.key !== key) {
+      return res.status(403).json({ error: 'Сессия загрузки не найдена или истекла.' });
+    }
+    if (!Number.isInteger(partNumber) || partNumber < 1 || partNumber > 10000) {
+      return res.status(400).json({ error: 'Некорректный номер части.' });
+    }
+    const signed = await r2.signUploadPart({ key, uploadId, partNumber });
+    res.json(signed);
+  } catch (err) {
+    console.error('sign-part failed:', err.message);
+    res.status(err.status || 500).json({ error: err.message || 'Не удалось подписать часть.' });
+  }
+});
+
+app.post('/api/lessons/upload/complete', requireAuth, requireRole('TEACHER'), async (req, res) => {
+  try {
+    const b = req.body || {};
+    const uploadId = String(b.uploadId || '');
+    const key = String(b.key || '');
+    const parts = Array.isArray(b.parts) ? b.parts : [];
+    const session = pendingR2Uploads.get(uploadId);
+    if (!session || session.teacherId !== req.auth.user.id || session.key !== key) {
+      return res.status(403).json({ error: 'Сессия загрузки не найдена или истекла.' });
+    }
+    const done = await r2.completeMultipartUpload({ key, uploadId, parts });
+    pendingR2Uploads.delete(uploadId);
+    res.json({
+      fileKey: done.key,
+      mediaUrl: done.url || null,
+      mimeType: session.mimeType,
+      originalName: session.filename,
+      size: session.size,
+    });
+  } catch (err) {
+    console.error('upload complete failed:', err.message);
+    res.status(err.status || 500).json({ error: err.message || 'Не удалось завершить загрузку.' });
+  }
+});
+
+app.post('/api/lessons/upload/abort', requireAuth, requireRole('TEACHER'), async (req, res) => {
+  try {
+    const b = req.body || {};
+    const uploadId = String(b.uploadId || '');
+    const key = String(b.key || '');
+    const session = pendingR2Uploads.get(uploadId);
+    if (session && session.teacherId === req.auth.user.id) {
+      await r2.abortMultipartUpload({ key: key || session.key, uploadId });
+      pendingR2Uploads.delete(uploadId);
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Не удалось отменить загрузку.' });
+  }
+});
+
 app.post('/api/lessons', requireAuth, requireRole('TEACHER'), (req, res) => {
   uploadLesson.single('file')(req, res, async (err) => {
     try {
-    if (err) return res.status(400).json({ error: err.message || 'Не удалось загрузить файл.' });
+    if (err) {
+      const msg = err.code === 'LIMIT_FILE_SIZE'
+        ? `Файл слишком большой для прямой загрузки. Используйте загрузку в R2 (до ${MAX_VIDEO_SIZE_MB} МБ).`
+        : (err.message || 'Не удалось загрузить файл.');
+      return res.status(400).json({ error: msg });
+    }
     const teacher = req.auth.user;
     const body = req.body || {};
     const section = String(body.section || '').toUpperCase() === 'BONUS' ? 'BONUS' : 'VIDEO';
@@ -2474,11 +2740,15 @@ app.post('/api/lessons', requireAuth, requireRole('TEACHER'), (req, res) => {
     if (!title) return res.status(400).json({ error: 'Укажите название урока.' });
     const videoUrl = String(body.videoUrl || '').trim();
     const file = req.file;
-    if (type === 'PDF' && !file) {
+    const r2Key = String(body.fileKey || body.r2Key || '').trim();
+    const r2MediaUrl = String(body.mediaUrl || '').trim();
+    const r2Mime = String(body.mimeType || '').trim();
+    const r2Name = String(body.originalName || '').trim();
+    if (type === 'PDF' && !file && !r2Key) {
       return res.status(400).json({ error: 'Приложите PDF-документ.' });
     }
-    if ((type === 'VIDEO' || type === 'COMPUTER') && !file && !videoUrl) {
-      return res.status(400).json({ error: 'Загрузите видео или вставьте ссылку (YouTube).' });
+    if ((type === 'VIDEO' || type === 'COMPUTER') && !file && !videoUrl && !r2Key) {
+      return res.status(400).json({ error: 'Загрузите видео, вставьте YouTube или завершите загрузку в R2.' });
     }
     if (file && type === 'PDF') {
       const ext = path.extname(file.originalname || '').toLowerCase();
@@ -2501,6 +2771,19 @@ app.post('/api/lessons', requireAuth, requireRole('TEACHER'), (req, res) => {
     });
     let stored = null;
     if (file) stored = await persistUpload(file, 'lessons');
+    else if (r2Key) {
+      if (!/^lessons\/[a-zA-Z0-9._-]+$/i.test(r2Key) && !/^lessons\//.test(r2Key)) {
+        return res.status(400).json({ error: 'Некорректный ключ файла R2.' });
+      }
+      stored = {
+        mediaKey: r2Key,
+        mediaUrl: r2MediaUrl || r2.publicUrlForKey(r2Key),
+        mediaPath: null,
+        mediaBase64: null,
+        mimeType: r2Mime || 'video/mp4',
+        originalName: r2Name || path.basename(r2Key),
+      };
+    }
     const meta = LESSON_TYPE_META[type] || LESSON_TYPE_META.VIDEO;
     const lesson = {
       id: db.id('lsn'),
@@ -2552,7 +2835,12 @@ app.post('/api/lessons', requireAuth, requireRole('TEACHER'), (req, res) => {
 app.post('/api/lessons/:id/file', requireAuth, requireRole('TEACHER'), (req, res) => {
   uploadLesson.single('file')(req, res, async (err) => {
     try {
-      if (err) return res.status(400).json({ error: err.message || 'Не удалось загрузить файл.' });
+      if (err) {
+        const msg = err.code === 'LIMIT_FILE_SIZE'
+          ? 'Файл слишком большой. Максимум 400 МБ.'
+          : (err.message || 'Не удалось загрузить файл.');
+        return res.status(400).json({ error: msg });
+      }
       const lesson = store().lessons.find((l) => l.id === req.params.id);
       if (!lesson) return res.status(404).json({ error: 'Урок не найден.' });
       if (lesson.teacherId !== req.auth.user.id) {
@@ -2593,19 +2881,24 @@ app.delete('/api/lessons/:id', requireAuth, requireRole('TEACHER'), async (req, 
     if (lesson.teacherId !== req.auth.user.id) {
       return res.status(403).json({ error: 'Нет доступа к этому уроку.' });
     }
-    if (lesson.fileKey && r2.r2Configured()) {
-      try { await r2.deleteObject(lesson.fileKey); } catch (_) { /* ignore */ }
-    }
+    const fileKey = lesson.fileKey;
     if (lesson.filePath) {
       const filePath = path.join(db.LESSONS_DIR, path.basename(lesson.filePath));
       try { fs.unlinkSync(filePath); } catch (_) { /* ignore */ }
     }
     store().lessons.splice(idx, 1);
-    // Fast path: do NOT await full DB rewrite (mediaBase64 can make persist hang for minutes)
+    // DB first — only then remove R2 object (avoid orphan DB rows if delete fails)
     if (pg.hasDatabaseUrl()) {
       await pg.query('DELETE FROM lessons WHERE id = $1', [req.params.id]);
     } else {
       await save();
+    }
+    if (fileKey && r2.r2Configured()) {
+      try {
+        await r2.deleteObject(fileKey);
+      } catch (e) {
+        console.error('R2 delete after lesson remove failed (retry later):', e.message);
+      }
     }
     res.json({ ok: true });
   } catch (err) {

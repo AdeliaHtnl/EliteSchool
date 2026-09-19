@@ -5,6 +5,7 @@ import {
   parseLang, parseLevel, trackSlug, langLabel, levelLabel, studentIsEn, subjectSlugForUser, brandLogo,
 } from './ui.js';
 import { mediaUrl, lessonFileUrl } from './api.js';
+import { renderUploadCard } from './upload.js';
 
 function authMediaPlayer(kind, path, style = '') {
   const tag = kind === 'VIDEO' ? 'video' : 'audio';
@@ -1005,7 +1006,8 @@ function teacherLiteracySnippet(lit, studentId) {
     </div>`;
 }
 
-export function viewTeacherAssignments(list) {
+export function viewTeacherAssignments(list, lang = 'ru') {
+  const slug = trackSlug(lang);
   const groups = [
     ['Активные', list.filter((a) => a.status === 'ACTIVE')],
     ['Черновики', list.filter((a) => a.status === 'DRAFT')],
@@ -1026,10 +1028,13 @@ export function viewTeacherAssignments(list) {
           <div class="task-ic">${ic('clip', 16)}</div>
           <div style="flex:1; min-width:0;"><p class="t-title">${esc(displayTitle(a.title))}</p><p class="t-meta">Назначено: ${a.assignedCount} · Сдали: ${a.submittedCount} · На проверке: ${a.pendingReview} · Ср. оценка: ${a.avgScore ?? '—'}</p></div>
           ${assignmentStatusBadge(a.status)}
-          <a href="#teacher-review" class="btn btn-ghost btn-sm">Открыть</a>
+          <div style="display:flex; flex-wrap:wrap; gap:6px;">
+            <a href="#teacher-assignment-edit/${esc(a.id)}" class="btn btn-ghost btn-sm">Изменить</a>
+            <button type="button" class="btn btn-ghost btn-sm" data-action="delete-assignment" data-id="${esc(a.id)}" data-back="teacher-assignments/${slug}">Удалить</button>
+          </div>
         </div>`).join('') : `<div class="section-sub">Пока пусто</div>`}
       </div>`).join('')}
-    <a href="#teacher-create" class="btn btn-primary">${ic('plus', 16)} Создать задание</a>
+    <a href="#teacher-create/${slug}" class="btn btn-primary">${ic('plus', 16)} Создать задание</a>
   `;
   return appPage('teacher', 'teacher-assignments', 'Задания', null, body);
 }
@@ -1085,6 +1090,79 @@ export function viewTeacherCreate(students, lang = 'ru') {
     </div>
   `;
   return teacherPage(code, isEn ? 'Create English assignment' : 'Создать задание', null, body);
+}
+
+function toDatetimeLocal(isoStr) {
+  if (!isoStr) return '';
+  const d = new Date(isoStr);
+  if (Number.isNaN(d.getTime())) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+export function viewTeacherEditAssignment(payload, students) {
+  const a = payload?.assignment || {};
+  const code = parseLang(a.language);
+  const slug = trackSlug(code);
+  const isEn = code === 'en';
+  const list = (students || []).filter((s) => parseLang(s.language) === code);
+  const assigned = new Set((a.assignedStudents || []).map((s) => s.id));
+  const level = a.targetLevel || 'ALL';
+  const mode = a.mode || 'AUDIO';
+  const body = `
+    <a href="#teacher-assignments/${slug}" class="btn btn-ghost btn-sm" style="margin-bottom:18px;">${ic('arrowL', 14)} ${isEn ? 'Back to assignments' : 'К списку заданий'}</a>
+    <div class="card card-lg" style="max-width:820px;">
+      <form data-form="edit-assignment" data-id="${esc(a.id)}">
+        <div class="form-error" data-error hidden></div>
+        <input type="hidden" name="language" value="${code}">
+        <div class="form-grid">
+          <div class="field span-2"><label>${isEn ? 'Title' : 'Название'}</label><input name="title" type="text" required value="${esc(a.title || '')}"></div>
+          <div class="field span-2"><label>${isEn ? 'Description' : 'Описание'}</label><textarea name="description">${esc(a.description || '')}</textarea></div>
+          <div class="field span-2"><label>${isEn ? 'Text' : 'Текст'}</label><textarea name="text" required style="min-height:160px;">${esc(a.text || '')}</textarea></div>
+          <div class="field"><label>${isEn ? 'Reading (min)' : 'Время чтения (минуты)'}</label><input name="readingMin" type="number" min="1" max="60" value="${Math.max(1, Math.round((a.readingTime || 300) / 60))}" required></div>
+          <div class="field"><label>${isEn ? 'Prep (min)' : 'Время подготовки (минуты)'}</label><input name="prepMin" type="number" min="1" max="60" value="${Math.max(1, Math.round((a.preparationTime || 120) / 60))}" required></div>
+          <div class="field"><label>${isEn ? 'Retelling max (min)' : 'Максимальное время пересказа (минуты)'}</label><input name="retellMin" type="number" min="1" max="30" value="${Math.max(1, Math.round((a.retellingTime || 300) / 60))}" required></div>
+          <div class="field"><label>${isEn ? 'Deadline' : 'Дедлайн'}</label><input name="deadline" type="datetime-local" value="${esc(toDatetimeLocal(a.deadline))}"></div>
+          <div class="field span-2"><label>${isEn ? 'Level' : 'Уровень задания'}</label>
+            <div class="chip-select">
+              <label><input type="radio" name="targetLevel" value="BEGINNER" ${level === 'BEGINNER' ? 'checked' : ''}> ${isEn ? 'Beginner' : 'Начальный'}</label>
+              <label><input type="radio" name="targetLevel" value="INTERMEDIATE" ${level === 'INTERMEDIATE' ? 'checked' : ''}> ${isEn ? 'Intermediate' : 'Средний'}</label>
+              <label><input type="radio" name="targetLevel" value="ADVANCED" ${level === 'ADVANCED' ? 'checked' : ''}> ${isEn ? 'Advanced' : 'Продвинутый'}</label>
+              <label><input type="radio" name="targetLevel" value="ALL" ${level === 'ALL' || !level ? 'checked' : ''}> ${isEn ? 'All levels' : 'Все уровни раздела'}</label>
+            </div>
+          </div>
+          <div class="field span-2"><label>${isEn ? 'Recording type' : 'Тип записи'}</label>
+            <div class="chip-select">
+              <label><input type="radio" name="mode" value="AUDIO" ${mode === 'AUDIO' ? 'checked' : ''}> ${isEn ? 'Audio' : 'Голос'}</label>
+              <label><input type="radio" name="mode" value="VIDEO" ${mode === 'VIDEO' ? 'checked' : ''}> ${isEn ? 'Video' : 'Видео'}</label>
+              <label><input type="radio" name="mode" value="BOTH" ${mode === 'BOTH' ? 'checked' : ''}> ${isEn ? 'Audio or video' : 'Голос и видео на выбор'}</label>
+            </div>
+          </div>
+          <div class="field span-2"><label>${isEn ? 'Status' : 'Статус'}</label>
+            <div class="chip-select">
+              <label><input type="radio" name="status" value="DRAFT" ${a.status === 'DRAFT' ? 'checked' : ''}> ${isEn ? 'Draft' : 'Черновик'}</label>
+              <label><input type="radio" name="status" value="ACTIVE" ${a.status === 'ACTIVE' || a.status === 'EXPIRED' ? 'checked' : ''}> ${isEn ? 'Active' : 'Активное'}</label>
+              <label><input type="radio" name="status" value="COMPLETED" ${a.status === 'COMPLETED' ? 'checked' : ''}> ${isEn ? 'Completed' : 'Завершённое'}</label>
+            </div>
+            ${a.status === 'EXPIRED' ? `<p class="section-sub" style="margin-top:8px;">${isEn ? 'Was expired — saving as Active will reopen it.' : 'Было просрочено — сохранение как «Активное» снова откроет задание.'}</p>` : ''}
+          </div>
+          <div class="field span-2"><label>${isEn ? 'Students' : 'Ученики'}</label>
+            <div class="chip-select">
+              <label><input type="checkbox" data-assign-all ${assigned.size === list.length && list.length ? 'checked' : ''}> ${isEn ? 'All matching students' : 'Всем подходящим ученикам'}</label>
+            </div>
+            <div class="chip-select" data-student-chips style="margin-top:10px;">
+              ${list.length ? list.map((s) => `<label><input type="checkbox" name="studentIds" value="${esc(s.id)}" ${assigned.has(s.id) ? 'checked' : ''}> ${esc(s.name)} · ${esc(levelLabel(s.enrollmentLevel, isEn ? 'en' : 'ru'))}</label>`).join('') : `<p class="section-sub">${isEn ? 'No students yet.' : 'Пока нет учеников.'}</p>`}
+            </div>
+          </div>
+        </div>
+        <div class="form-actions">
+          <button type="button" class="btn btn-ghost" data-action="delete-assignment" data-id="${esc(a.id)}" data-back="teacher-assignments/${slug}">${isEn ? 'Delete' : 'Удалить'}</button>
+          <button type="submit" class="btn btn-primary">${isEn ? 'Save changes' : 'Сохранить изменения'} ${ic('arrowR', 16)}</button>
+        </div>
+      </form>
+    </div>
+  `;
+  return teacherPage(code, isEn ? 'Edit assignment' : 'Изменить задание', null, body);
 }
 
 export function viewTeacherReview(list) {
@@ -1192,7 +1270,7 @@ export function viewTeacherProfile(totals) {
     <div class="card card-lg" style="max-width:520px;">
       <div style="display:flex; align-items:center; gap:16px; margin-bottom:22px;">
         <div class="avatar" style="width:64px;height:64px;font-size:18px;">${esc(initials(u.name))}</div>
-        <div><p class="section-title" style="margin-bottom:2px;">${esc(u.name)}</p><p class="section-sub" style="margin:0;">${u.groupName ? `Группа «${esc(u.groupName)}» · ` : ''}код ${esc(u.code)}</p></div>
+        <div><p class="section-title" style="margin-bottom:2px;">${esc(u.name)}</p><p class="section-sub" style="margin:0;">Учитель${u.groupName ? ` · группа «${esc(u.groupName)}»` : ''}</p></div>
       </div>
       <div class="grid-3" style="gap:12px;">
         <div class="card" style="padding:16px; text-align:center;"><b style="font-family:'Unbounded'; font-size:19px;">${totals?.students ?? '—'}</b><div class="section-sub" style="margin:0;">учеников</div></div>
@@ -1280,11 +1358,14 @@ export function viewTeacherVideoCreate(lang = 'ru') {
           <div class="field span-2"><label>${isEn ? 'Description' : 'Описание'}</label><textarea name="description" placeholder="${isEn ? 'What the lesson is about' : 'Коротко, о чём урок'}"></textarea></div>
           <div class="field"><label>${isEn ? 'Duration' : 'Длительность'}</label><input name="duration" type="text" placeholder="6:12"></div>
           <div class="field"><label>YouTube</label><input name="videoUrl" type="url" placeholder="https://youtu.be/…"></div>
-          <div class="field span-2"><label>${isEn ? 'Or upload a video file (max 40 MB)' : 'Или загрузите видеофайл (макс. 40 МБ)'}</label><input name="file" type="file" accept="video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov"></div>
+          <div class="field span-2">
+            <label>${isEn ? 'Or upload video (up to 5 GB via Cloudflare R2)' : 'Или загрузите видео (до 5 ГБ через Cloudflare R2)'}</label>
+            ${renderUploadCard({ maxLabel: '5 GB', name: 'file' })}
+          </div>
         </div>
         <p class="section-sub">${isEn
-          ? 'Prefer YouTube for long videos — uploaded files without cloud storage can disappear after server updates.'
-          : 'Для длинных видео лучше YouTube. Загруженные файлы без облака могут пропасть после обновления сервера.'}</p>
+          ? 'Large videos upload directly to Cloudflare R2 (not Render disk). YouTube links also work.'
+          : 'Большие видео загружаются напрямую в Cloudflare R2 (не на диск Render). Можно и ссылку YouTube.'}</p>
         <button type="submit" class="btn btn-primary btn-block" style="margin-top:8px;">${ic('plus', 16)} ${isEn ? 'Publish lesson' : 'Опубликовать урок'}</button>
       </form>
     </div>
@@ -1390,7 +1471,7 @@ export function viewTeacherLessonDetail(payload) {
       <form data-form="lesson-replace-file" data-id="${esc(l.id)}" style="margin-top:18px; display:grid; gap:12px;">
         <p class="section-title" style="margin:0;">${needsFix ? 'Восстановить видео' : 'Заменить файл / ссылку'}</p>
         <div class="field"><label>YouTube (рекомендуется)</label><input name="videoUrl" type="url" placeholder="https://youtu.be/…" value="${esc(l.videoUrl || '')}"></div>
-        <div class="field"><label>Или файл (до 40 МБ)</label><input name="file" type="file" accept="video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov,application/pdf,.pdf"></div>
+        <div class="field"><label>Или загрузка в R2 (до 5 ГБ)</label>${renderUploadCard({ maxLabel: '5 GB', name: 'file' })}</div>
         <div class="form-error" data-error hidden></div>
         <button type="submit" class="btn btn-primary">${ic('plus', 16)} Сохранить медиа</button>
       </form>
